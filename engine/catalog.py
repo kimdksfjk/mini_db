@@ -1,40 +1,48 @@
-
-"""
-Catalog persistence mirror. On startup load data/catalog.meta, on changes save it.
-Structure example:
-  tables: {
-    "users": {"file_id": "...", "columns":[{"name":"id","type":"INT"},...], "pk": null}
-  }
-"""
+from __future__ import annotations
 import json, os
-from typing import Dict, Any
-
-META_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "catalog.meta")
+from typing import Dict, List, Any, Optional
 
 class Catalog:
-    def __init__(self):
-        self.data = {"tables": {}}
-        self.load()
+    """Very small JSON-backed system catalog.
+    - Stored at <data_dir>/catalog.json
+    - Tables: { table_name: {"columns":[{"name":...,"type":...}, ...]} }
+    This is a minimal workable catalog for the execution engine. The real storage
+    layer can later replace this with a page-backed catalog; API stays the same.
+    """
+    def __init__(self, data_dir: str = "data") -> None:
+        self.data_dir = data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.path = os.path.join(self.data_dir, "catalog.json")
+        self._data: Dict[str, Any] = {"tables": {}}
+        if os.path.exists(self.path):
+            self._data = json.load(open(self.path, "r", encoding="utf-8"))
+        else:
+            self._flush()
 
-    def load(self):
-        if os.path.exists(META_PATH):
-            with open(META_PATH, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
+    # ---- basic ops ----
+    def _flush(self) -> None:
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=2)
 
-    def save(self):
-        os.makedirs(os.path.dirname(META_PATH), exist_ok=True)
-        with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+    def has_table(self, name: str) -> bool:
+        return name in self._data["tables"]
 
-    def get_schema(self, table: str):
-        return self.data["tables"][table]["columns"]
+    def create_table(self, name: str, columns: List[Dict[str, Any]], if_not_exists: bool = True) -> None:
+        if self.has_table(name):
+            if if_not_exists:
+                return
+            raise ValueError(f"Table '{name}' already exists")
+        self._data["tables"][name] = {"columns": columns}
+        self._flush()
 
-    def get_file_id(self, table: str):
-        return self.data["tables"][table]["file_id"]
+    def drop_table(self, name: str) -> None:
+        if not self.has_table(name):
+            return
+        del self._data["tables"][name]
+        self._flush()
 
-    def create_table(self, table: str, columns):
-        if table in self.data["tables"]:
-            raise ValueError(f"Table exists: {table}")
-        # file_id assigned by storage/files.py at execution time
-        self.data["tables"][table] = {"columns": columns, "file_id": None, "pk": None}
-        self.save()
+    def schema(self, name: str) -> List[Dict[str, Any]]:
+        t = self._data["tables"].get(name)
+        if not t:
+            raise ValueError(f"Unknown table '{name}'")
+        return t["columns"]

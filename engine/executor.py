@@ -1,36 +1,42 @@
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
 
-"""Bind logical plan to physical operators and execute (stub)."""
-from typing import Dict, Any, List
-from .operators import seq_scan, filter as filt, project, insert, delete, create_table
+from .plan import Plan, CreateTable as PCreateTable, InsertValues as PInsertValues, SeqScan as PSeqScan, Filter as PFilter, Project as PProject, Delete as PDelete, plan_from_dict
+from .operator import CreateTable as OCreateTable, InsertValues as OInsertValues, SeqScan as OSeqScan, Filter as OFilter, Project as OProject, Delete as ODelete
+from .storage_iface import Storage
+from .catalog import Catalog
 
-class ExecContext:
-    def __init__(self, catalog, table_resolver):
+class Executor:
+    """Plan executor that builds operator trees and runs them."""
+    def __init__(self, storage: Storage, catalog: Catalog) -> None:
+        self.storage = storage
         self.catalog = catalog
-        self.table = table_resolver  # callable: name -> TableHeap
 
-def build(plan: Dict[str, Any], ctx: ExecContext):
-    op = plan["op"]
-    if op == "SeqScan":
-        return seq_scan.SeqScan(ctx.table(plan["table"]))
-    if op == "Filter":
-        return filt.Filter(build(plan["child"], ctx), plan["predicate"])
-    if op == "Project":
-        return project.Project(build(plan["child"], ctx), plan["columns"])
-    if op == "Insert":
-        return insert.Insert(ctx.table(plan["table"]), plan["values"])
-    if op == "Delete":
-        return delete.Delete(ctx.table(plan["table"]), plan["predicate"])
-    if op == "CreateTable":
-        return create_table.CreateTable(ctx.catalog, plan)
-    raise ValueError(f"Unsupported op: {op}")
+    def build(self, plan: Plan):
+        if isinstance(plan, PCreateTable):
+            return OCreateTable(self.catalog, self.storage, plan.table, plan.columns, plan.if_not_exists)
+        if isinstance(plan, PInsertValues):
+            return OInsertValues(self.storage, plan.table, plan.columns, plan.values)
+        if isinstance(plan, PSeqScan):
+            return OSeqScan(self.storage, plan.table)
+        if isinstance(plan, PFilter):
+            return OFilter(self.build(plan.input), plan.predicate)
+        if isinstance(plan, PProject):
+            return OProject(self.build(plan.input), plan.cols)
+        if isinstance(plan, PDelete):
+            return ODelete(self.storage, plan.table, plan.predicate)
+        raise ValueError(f"Unsupported plan node: {type(plan).__name__}")
 
-def run(plan: Dict[str, Any], ctx: ExecContext) -> List[dict]:
-    op = build(plan, ctx)
-    op.open()
-    rows = []
-    while True:
-        r = op.next()
-        if r is None: break
-        rows.append(r)
-    op.close()
-    return rows
+    def execute(self, plan: Plan | Dict[str, Any]):
+        if isinstance(plan, dict):
+            plan = plan_from_dict(plan)
+        op = self.build(plan)
+        op.open()
+        out: List[Any] = []
+        while True:
+            row = op.next()
+            if row is None:
+                break
+            out.append(row)
+        op.close()
+        return out
