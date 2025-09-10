@@ -13,17 +13,18 @@ except ImportError:
     from engine.storage_iface import JsonlStorage
     from engine.catalog import Catalog
 
+# ===== 中文化提示 =====
 BANNER = (
-    "Welcome to the mini_db monitor.\n"
-    "Commands end with ;  or \\g.  Type \\h or \\? for help.  Type \\q to quit.\n"
+    "欢迎使用 mini_db 客户端。\n"
+    "语句以 ; 或 \\g 结束。输入 \\h 或 \\? 查看帮助；输入 \\q 退出。\n"
 )
 
 HELP = r"""
-MySQL-ish commands:
+类 MySQL 命令：
   SHOW TABLES;
-  DESCRIBE <table>;        -- alias: DESC <table>;
-  \q, quit, exit           -- quit the client
-  \h, \?                   -- this help
+  DESCRIBE <表名>;         -- 或：DESC <表名>;
+  \q, quit, exit           -- 退出客户端
+  \h, \?                   -- 查看帮助
 """
 
 PROMPT = "mini_db> "
@@ -31,7 +32,7 @@ CONT_PROMPT = "    -> "
 
 def print_table(rows: List[Dict[str, Any]], cols: Optional[List[str]] = None, elapsed: float = 0.0):
     if not rows:
-        print(f"Empty set ({elapsed:.2f} sec)")
+        print(f"空集（{elapsed:.2f} 秒）")
         return
     if cols is None or cols == ["*"]:
         keys = []
@@ -54,13 +55,15 @@ def print_table(rows: List[Dict[str, Any]], cols: Optional[List[str]] = None, el
     for r in rows:
         print("| " + " | ".join((("NULL" if r.get(c) is None else str(r.get(c))).ljust(widths[i])) for i, c in enumerate(cols)) + " |")
     print(line())
-    print(f"{len(rows)} row{'s' if len(rows)!=1 else ''} in set ({elapsed:.2f} sec)")
+    print(f"{len(rows)} 行记录（{elapsed:.2f} 秒）")
 
 def ok(msg: str, elapsed: float = 0.0):
-    print(f"{msg} ({elapsed:.2f} sec)")
+    # 把英文提示改为中文
+    # 兼容传入英文的场景：若上层传英文，这里不强制替换，只统一加上耗时
+    print(f"{msg}（{elapsed:.2f} 秒）")
 
 def read_statement() -> Optional[str]:
-    """Read one statement terminated by ';' or '\\g' (not inside quotes)."""
+    r"""读取一条语句（以 ';' 或 '\g' 结束；引号内的分号不算结束）。"""
     buf = ""
     in_str = False
     quote = None
@@ -84,7 +87,7 @@ def read_statement() -> Optional[str]:
         while i < len(buf):
             ch = buf[i]
             if in_str:
-                # skip escape like \" or \'
+                # 跳过转义字符（如 \" 或 \')
                 if ch == '\\' and i + 1 < len(buf):
                     i += 2; continue
                 if ch == quote:
@@ -97,7 +100,7 @@ def read_statement() -> Optional[str]:
             if ch == ';':
                 return buf.strip()
 
-            # support \g terminator
+            # 支持 \g 作为结束
             if ch == '\\' and i + 1 < len(buf) and buf[i+1] == 'g':
                 return buf[:i].strip()
 
@@ -105,6 +108,7 @@ def read_statement() -> Optional[str]:
 
 # --------- SHOW/DESC helpers ---------
 def show_tables(catalog: Catalog):
+    # 为了兼容 MySQL 的显示风格，列名仍保留原风格；如需中文表头可改成 "表名"
     rows = [{"Tables_in_mini_db": name} for name in catalog.list_tables()]
     return rows, ["Tables_in_mini_db"]
 
@@ -124,7 +128,7 @@ def describe_table(catalog: Catalog, table: str):
 
 # --------- Compiler loader (supports --compiler) ---------
 class _CompilerWrapper:
-    """Wrap either a class with .compile(sql) or a function returning a plan/result."""
+    """包装编译器（类：有 .compile(sql)，或函数：返回计划/结果的 dict）。"""
     def __init__(self, obj: Any):
         self.obj = obj
         if callable(obj) and not hasattr(obj, "compile"):
@@ -142,23 +146,23 @@ class _CompilerWrapper:
             return {"success": True, "execution_plan": res}
         if isinstance(res, dict):
             return res
-        raise ValueError("Compiler function must return a dict.")
+        raise ValueError("编译器函数必须返回 dict。")
 
 def load_compiler(spec: Optional[str]) -> _CompilerWrapper:
-    """spec like 'sql.sql_compiler:SQLCompiler' or 'pkg.mod:compile_to_plan'."""
+    """spec 形式：'sql.sql_compiler:SQLCompiler' 或 'pkg.mod:compile_to_plan'。"""
     tried = []
     if spec:
         if ":" not in spec:
-            raise SystemExit("Value of --compiler must be '<module>:<symbol>'")
+            raise SystemExit("参数 --compiler 的格式应为：'<模块>:<符号>'")
         mod, sym = spec.split(":", 1)
         try:
             m = importlib.import_module(mod)
             return _CompilerWrapper(getattr(m, sym))
         except Exception as e:
-            raise SystemExit(f"Failed to import compiler '{spec}': {e}")
-    # defaults: try local/sibling first
+            raise SystemExit(f"导入编译器 '{spec}' 失败：{e}")
+    # 默认尝试位置（按你们的文件名）
     defaults = [
-        ("sql.sql_compiler", "SQLCompiler"),          # ← 你的文件名
+        ("sql.sql_compiler", "SQLCompiler"),
         ("mini_db.sql.sql_compiler", "SQLCompiler"),
         ("mini_db.sql.compiler", "SQLCompiler"),
         ("sql.compiler", "SQLCompiler"),
@@ -169,12 +173,13 @@ def load_compiler(spec: Optional[str]) -> _CompilerWrapper:
             return _CompilerWrapper(getattr(m, sym))
         except Exception as e:
             tried.append(f"{mod}:{sym} -> {e}")
-    raise SystemExit("No SQL compiler found. Provide --compiler '<module>:<symbol>'. Tried: " + "; ".join(tried))
+    raise SystemExit("未找到 SQL 编译器。请通过 --compiler '<模块>:<符号>' 指定。已尝试："
+                     + "; ".join(tried))
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="mini_db_mysql", description="MySQL-like interactive client for mini_db")
-    ap.add_argument("--data", default="data", help="data dir (default: data)")
-    ap.add_argument("--compiler", default=None, help="SQL compiler path like 'sql.sql_compiler:SQLCompiler'")
+    ap = argparse.ArgumentParser(prog="mini_db_mysql", description="类 MySQL 的 mini_db 交互客户端")
+    ap.add_argument("--data", default="data", help="数据目录（默认：data）")
+    ap.add_argument("--compiler", default=None, help="SQL 编译器路径，例如：sql.sql_compiler:SQLCompiler")
     args = ap.parse_args(argv)
 
     storage = JsonlStorage(data_dir=args.data)
@@ -186,7 +191,7 @@ def main(argv=None):
     while True:
         stmt = read_statement()
         if stmt is None:
-            print("Bye")
+            print("再见")
             return
         if not stmt.strip():
             continue
@@ -200,37 +205,37 @@ def main(argv=None):
                 rows, cols = describe_table(catalog, m.group(1))
                 print_table(rows, cols, elapsed=0.0)
             except Exception as e:
-                print(f"ERROR {type(e).__name__}: {e}")
+                print(f"错误 {type(e).__name__}: {e}")
             continue
-        # Compile & execute
+        # 编译并执行
         try:
             t0 = time.perf_counter()
             res = compiler.compile(stmt)
             if not isinstance(res, dict):
-                raise ValueError("Compiler must return dict")
+                raise ValueError("编译器返回值必须为 dict")
             plan = res.get("execution_plan") if "execution_plan" in res else res
             if "success" in res and not res.get("success"):
                 raise ValueError(res.get("error"))
             if not isinstance(plan, dict) or "type" not in plan:
-                raise ValueError("Compiler did not return a valid execution plan dict with 'type'.")
+                raise ValueError("编译器未返回包含 'type' 的有效执行计划。")
             out = execu.execute_sql_plan(plan)
             elapsed = time.perf_counter() - t0
             if plan.get("type") in ("Select","ExtendedSelect"):
                 print_table(out, cols=plan.get("columns"), elapsed=elapsed)
             elif plan.get("type") == "Insert":
                 affected = sum(int(x.get("affected",0)) for x in out)
-                ok(f"Query OK, {affected} rows affected", elapsed)
+                ok(f"执行成功，影响 {affected} 行", elapsed)
             elif plan.get("type") in ("CreateTable", "Delete", "Update"):
                 affected = 0
                 if plan.get("type") in ("Delete","Update"):
                     affected = sum(int(x.get("affected",0)) for x in out)
-                ok(f"Query OK, {affected} rows affected", elapsed)
+                ok(f"执行成功，影响 {affected} 行", elapsed)
             else:
-                ok("Query OK", elapsed)
+                ok("执行成功", elapsed)
         except NotImplementedError as e:
-            print(f"ERROR NotImplemented: {e}")
+            print(f"错误 NotImplemented: {e}")
         except Exception as e:
-            print(f"ERROR {type(e).__name__}: {e}")
+            print(f"错误 {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     main()
