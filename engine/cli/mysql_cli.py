@@ -1,16 +1,16 @@
 # engine/mysql_cli.py
 from __future__ import annotations
-import argparse, sys, json, time, re, importlib, inspect
+import argparse, sys, time, re, importlib, inspect
 from typing import Any, Dict, List, Optional
 
 # Engine parts
 try:
-    from engine.executor import Executor
-    from engine.storage_iface import JsonlStorage
-    from engine.catalog import Catalog
+    from .executor import Executor
+    from .storage_iface import JsonlStorage, HeapStorage
+    from .catalog import Catalog
 except ImportError:
     from engine.executor import Executor
-    from engine.storage_iface import JsonlStorage
+    from engine.storage_iface import JsonlStorage, HeapStorage
     from engine.catalog import Catalog
 
 BANNER = (
@@ -34,13 +34,11 @@ def print_table(rows: List[Dict[str, Any]], cols: Optional[List[str]] = None, el
     AS_SPLIT = re.compile(r"\s+AS\s+", flags=re.IGNORECASE)
 
     def pretty(col: str) -> str:
-        # 优先显示别名：COUNT(*) AS cnt -> cnt
         parts = AS_SPLIT.split(col, maxsplit=1)
         if len(parts) == 2 and parts[1]:
-            return parts[1]
-        # 没有别名则去掉表前缀：s.name -> name
+            return parts[1]        # 别名
         if "." in col:
-            return col.split(".")[-1]
+            return col.split(".")[-1]  # 去前缀
         return col
 
     if not rows:
@@ -138,9 +136,9 @@ def describe_table(catalog: Catalog, table: str):
         })
     return rows, ["Field","Type","Null","Key","Default","Extra"]
 
-# --------- Compiler loader (supports --compiler) ---------
+# --------- 编译器加载（支持 --compiler） ---------
 class _CompilerWrapper:
-    """封装类或函数风格的编译器（需具备 compile(sql) 或返回 dict 的可调用对象）。"""
+    """封装类或函数风格的编译器（需 compile(sql) 或返回 dict 的可调用对象）。"""
     def __init__(self, obj: Any):
         self.obj = obj
         if callable(obj) and not hasattr(obj, "compile"):
@@ -186,35 +184,22 @@ def load_compiler(spec: Optional[str]) -> _CompilerWrapper:
             tried.append(f"{mod}:{sym} -> {e}")
     raise SystemExit("未找到 SQL 编译器。请通过 --compiler 指定。Tried: " + "; ".join(tried))
 
-# --------- New: 直接转发编译器的错误 ---------
+# --------- 直接转发编译器错误 ---------
 def print_compiler_error(res: Dict[str, Any]) -> None:
-    """
-    将 SQLCompiler.compile 返回的错误结构原样美化输出。
-    兼容：
-      - {'success': False, 'error_type': 'SYNTAX_ERROR', 'message': '...', 'line': 1, 'column': 5, 'line_text': '...', 'pointer': '    ^'}
-      - {'success': False, 'error_type': 'SEMANTIC_ERROR', 'message': '...'}
-      - {'success': False, 'error': '...'}
-    """
     et = str(res.get("error_type", "")).upper()
     if et == "SYNTAX_ERROR":
-        line = res.get("line", "?")
-        col = res.get("column", "?")
+        line = res.get("line", "?"); col = res.get("column", "?")
         msg = res.get("message", "")
         print(f"✗ 语法错误: 行{line} 列{col} - {msg}")
-        lt = res.get("line_text")
-        if lt is not None:
-            print(lt)
-        ptr = res.get("pointer")
-        if ptr is not None:
-            print(ptr)
+        if res.get("line_text") is not None: print(res["line_text"])
+        if res.get("pointer")   is not None: print(res["pointer"])
         return
     if et == "SEMANTIC_ERROR":
         print(f"✗ 语义错误: {res.get('message','')}")
         return
-    if et:  # 其他类型
+    if et:
         print(f"✗ {et}: {res.get('message','')}")
         return
-    # 兼容旧版只返回 error 的情况
     if "error" in res:
         print(f"✗ 编译失败: {res.get('error')}")
     else:
@@ -223,10 +208,12 @@ def print_compiler_error(res: Dict[str, Any]) -> None:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mini_db_mysql", description="mini_db 的 MySQL 风格交互客户端")
     ap.add_argument("--data", default="data", help="数据目录（默认：data）")
+    ap.add_argument("--storage", choices=["json", "heap"], default="json",
+                    help="选择存储后端：json（默认）或 heap（pager+table_heap）")
     ap.add_argument("--compiler", default=None, help="SQL 编译器，如 'sql.sql_compiler:SQLCompiler'")
     args = ap.parse_args(argv)
 
-    storage = JsonlStorage(data_dir=args.data)
+    storage = JsonlStorage(args.data) if args.storage == "json" else HeapStorage(args.data)
     catalog = Catalog(data_dir=args.data)
     execu = Executor(storage=storage, catalog=catalog)
     compiler = load_compiler(args.compiler)
@@ -235,20 +222,17 @@ def main(argv=None):
     while True:
         stmt = read_statement()
         if stmt is None:
-            print("再见")
-            return
+            print("再见"); return
         if not stmt.strip():
             continue
 
         # 内置命令：SHOW/DESC
         if re.match(r"^SHOW\s+TABLES\s*;?$", stmt, flags=re.IGNORECASE):
-            rows, cols = show_tables(catalog)
-            print_table(rows, cols, elapsed=0.0); continue
+            rows, cols = show_tables(catalog); print_table(rows, cols, elapsed=0.0); continue
         m = re.match(r"^(?:DESCRIBE|DESC)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;?$", stmt, flags=re.IGNORECASE)
         if m:
             try:
-                rows, cols = describe_table(catalog, m.group(1))
-                print_table(rows, cols, elapsed=0.0)
+                rows, cols = describe_table(catalog, m.group(1)); print_table(rows, cols, elapsed=0.0)
             except Exception as e:
                 print(f"错误 {type(e).__name__}: {e}")
             continue
@@ -260,15 +244,12 @@ def main(argv=None):
             if not isinstance(res, dict):
                 print("✗ 编译失败：编译器未返回 dict"); continue
 
-            # 如果编译失败，直接转发编译器的错误并继续下一条
             if res.get("success") is False:
-                print_compiler_error(res)
-                continue
+                print_compiler_error(res); continue
 
             plan = res.get("execution_plan") if "execution_plan" in res else res
             if not isinstance(plan, dict) or "type" not in plan:
-                print("✗ 编译失败：编译器未返回有效的执行计划（缺少 'type'）")
-                continue
+                print("✗ 编译失败：编译器未返回有效的执行计划（缺少 'type'）"); continue
 
             out = execu.execute_sql_plan(plan)
             elapsed = time.perf_counter() - t0
@@ -276,20 +257,16 @@ def main(argv=None):
             if plan.get("type") in ("Select","ExtendedSelect"):
                 print_table(out, cols=plan.get("columns"), elapsed=elapsed)
             elif plan.get("type") == "Insert":
-                affected = sum(int(x.get("affected",0)) for x in out)
-                ok(f"执行成功，影响 {affected} 行", elapsed)
-            elif plan.get("type") in ("CreateTable", "Delete", "Update"):
-                affected = 0
-                if plan.get("type") in ("Delete","Update"):
-                    affected = sum(int(x.get("affected",0)) for x in out)
-                ok(f"执行成功，影响 {affected} 行", elapsed)
+                affected = sum(int(x.get("affected",0)) for x in out); ok(f"执行成功，影响 {affected} 行", elapsed)
+            elif plan.get("type") in ("CreateTable","Delete","Update"):
+                aff = sum(int(x.get("affected",0)) for x in out) if plan.get("type") in ("Delete","Update") else 0
+                ok(f"执行成功，影响 {aff} 行", elapsed)
             else:
                 ok("执行成功", elapsed)
 
         except NotImplementedError as e:
             print(f"错误 未实现: {e}")
         except Exception as e:
-            # 这里是执行阶段或我们这边的异常（非编译器错误）
             print(f"错误 {type(e).__name__}: {e}")
 
 if __name__ == "__main__":

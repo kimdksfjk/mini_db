@@ -23,7 +23,6 @@ class PlanBuilder:
         self.catalog = catalog
 
     def _base_table(self, name: str) -> str:
-        # 去掉 " AS alias"
         return (name or "").split(" AS ")[0]
 
     def build(self, plan: Dict[str, Any]) -> Operator | Any:
@@ -35,15 +34,14 @@ class PlanBuilder:
             schema = self.catalog.schema(table)
             node: Operator = SeqScan(table, schema, self.storage)
 
-            # 2) JOIN 串起来（顺序执行）
+            # 2) JOIN
             for j in (plan.get("joins") or []):
                 rtab = self._base_table(j.get("right_table"))
                 rschema = self.catalog.schema(rtab)
                 rnode: Operator = SeqScan(rtab, rschema, self.storage)
                 node = NestedLoopJoin(node, rnode, j.get("type", "INNER"), j.get("on_condition"))
 
-            # 3) WHERE 过滤（在 JOIN 之后，语义正确；需要可再做谓词下推优化）
-            #    schema 取当前 node.schema
+            # 3) WHERE
             pred = build_predicate(plan.get("where"), node.schema)
             node = Filter(node, pred)
 
@@ -57,50 +55,38 @@ class PlanBuilder:
                     having=gb.get("having"),
                 )
 
-            # 5) ORDER BY / LIMIT（在投影之前，避免排序键被投影丢掉）
+            # 5) ORDER BY / LIMIT
             if plan.get("order_by"):
                 node = OrderBy(node, plan.get("order_by"))
             if plan.get("limit") is not None or plan.get("offset") is not None:
                 node = Limit(node, plan.get("limit"), plan.get("offset"))
 
-            # 6) 投影（最后一步）：列名使用原始列串，便于 CLI 正确显示（包含 "AS" 时仍能取值）
+            # 6) PROJECT（最后）
             cols = plan.get("columns") or ["*"]
             node = Project(node, cols)
             return node
 
         elif t == "CreateTable":
-            return CreateTableOp(
-                self.catalog,
-                self.storage,
-                self._base_table(plan.get("table_name")),
-                plan.get("columns") or [],
-            )
+            return CreateTableOp(self.catalog, self.storage,
+                                 self._base_table(plan.get("table_name")),
+                                 plan.get("columns") or [])
 
         elif t == "Insert":
-            return InsertOp(
-                self.catalog,
-                self.storage,
-                self._base_table(plan.get("table_name")),
-                plan.get("columns") or [],
-                plan.get("values") or [],
-            )
+            return InsertOp(self.catalog, self.storage,
+                            self._base_table(plan.get("table_name")),
+                            plan.get("columns") or [],
+                            plan.get("values") or [])
 
         elif t == "Delete":
-            return DeleteOp(
-                self.catalog,
-                self.storage,
-                self._base_table(plan.get("table_name")),
-                plan.get("where"),
-            )
+            return DeleteOp(self.catalog, self.storage,
+                            self._base_table(plan.get("table_name")),
+                            plan.get("where"))
 
         elif t == "Update":
-            return UpdateOp(
-                self.catalog,
-                self.storage,
-                self._base_table(plan.get("table_name")),
-                plan.get("set_clauses") or [],
-                plan.get("where"),
-            )
+            return UpdateOp(self.catalog, self.storage,
+                            self._base_table(plan.get("table_name")),
+                            plan.get("set_clauses") or [],
+                            plan.get("where"))
 
         else:
             raise ValueError(f"Unsupported plan type: {t}")

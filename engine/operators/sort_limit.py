@@ -1,21 +1,13 @@
 # engine/operators/sort_limit.py
 from __future__ import annotations
 from typing import Dict, Any, Iterable, List
-
 from .base import Operator
 
-
 def _base_col(name: str) -> str:
-    # 去掉别名与表前缀："t.col AS c" / "t.col" / "col"
     return name.split(" AS ")[0].split(".")[-1]
 
-
 class OrderBy(Operator):
-    """
-    多键稳定排序：
-    - 支持每列 ASC/DESC。
-    - 对缺失值/None 稳健处理：无论升序还是降序，None 都会排在最后。
-    """
+    """多键稳定排序；无论升降序，None 永远排在最后。"""
     def __init__(self, child: Operator, keys: List[Dict[str, str]] | None) -> None:
         self.child = child
         self.keys = keys or []
@@ -25,28 +17,17 @@ class OrderBy(Operator):
         return self.child.schema
 
     def execute(self) -> Iterable[Dict[str, Any]]:
-        rows = list(self.child)  # 内存排序（数据量大可改为外排）
-
-        # 逐个键从后往前排序，利用 Python 排序稳定性
+        rows = list(self.child)
         for spec in reversed(self.keys):
-            col = _base_col(spec.get("column", ""))
-            desc = str(spec.get("direction", "ASC")).upper() == "DESC"
-
-            # 目标：None 永远最后，同时保证数值/字符串比较不出错
-            # 做法：
-            #   升序：按 key=(is_none, value) 排，is_none=False(<True) -> 非 None 在前，None 在后
-            #   降序：先按 key=(is_none, value) 逆序把值降序排好（此时 None 会到前面），
-            #         再稳定按 key=(is_none,) 升序把 None 推到最后
+            col = _base_col(spec.get("column",""))
+            desc = str(spec.get("direction","ASC")).upper() == "DESC"
             if not desc:
                 rows.sort(key=lambda x: (x.get(col) is None, x.get(col)))
             else:
                 rows.sort(key=lambda x: (x.get(col) is None, x.get(col)), reverse=True)
-                # 稳定二次排序：仅根据 None 标志，把 None 放到末尾
                 rows.sort(key=lambda x: (x.get(col) is None,))
-
         for r in rows:
             yield r
-
 
 class Limit(Operator):
     def __init__(self, child: Operator, limit: int | None, offset: int | None) -> None:
