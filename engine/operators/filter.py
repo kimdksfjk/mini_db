@@ -1,18 +1,17 @@
-# engine/operators/filter.py
+
 from __future__ import annotations
-from typing import Dict, Any, Iterable, Iterator, List, Callable
-from .base import Operator
+from typing import Dict, Any, Iterable, Iterator
+from .base import apply_where
 
-class Filter(Operator):
-    def __init__(self, child: Operator, predicate: Callable[[Dict[str, Any]], bool]) -> None:
-        self.child = child
-        self.predicate = predicate
+class FilterOperator:
+    def __init__(self, where: Dict[str, Any] | None) -> None:
+        self.where = where
 
-    @property
-    def schema(self) -> List[Dict[str, Any]]:
-        return self.child.schema
-
-    def execute(self) -> Iterable[Dict[str, Any]]:
-        for row in self.child:
-            if self.predicate(row):
-                yield row
+    def run(self, rows: Iterable[dict]) -> Iterator[dict]:
+        if not self.where:
+            for r in rows:
+                yield r
+            return
+        for r in rows:
+            if apply_where(r, self.where):
+                yield r

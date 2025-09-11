@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from buffer_pool import BufferPool
-from pager import Pager
-from data_page import DataPageView
+from .buffer_pool import BufferPool
+from .pager import Pager
+from .data_page import DataPageView
 
 RID = Tuple[int, int]  # (page_id, slot_id)
 

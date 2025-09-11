@@ -86,11 +86,18 @@ class DataPageView:
         data_off = free_off
         self.mv[data_off : data_off + len(payload)] = payload
 
-        # 新槽号 = 旧 slot_count
-        slot_id = sc
-        # 先写槽，再更新头
-        self._write_slot(slot_id, data_off, len(payload), 0)
+        # # 新槽号 = 旧 slot_count
+        # slot_id = sc
+        # # 先写槽，再更新头
+        # self._write_slot(slot_id, data_off, len(payload), 0)
+        # self._write_header(pid, free_off + len(payload), sc + 1, flags)
+        # 此处为G进行的改动。
+        # 先把 free_off 前移、slot_count 增加
         self._write_header(pid, free_off + len(payload), sc + 1, flags)
+
+        # 新槽位就是旧的 slot_count
+        slot_id = sc
+        self._write_slot(slot_id, data_off, len(payload), 0)
         return slot_id
 
     def read_record(self, slot_id: int) -> bytes:

@@ -1,2 +1,0 @@
-SHOW TABLES;
-SELECT SUM(age),COUNT(*) FROM student GROUP BY grade HAVING COUNT(*) > 1;

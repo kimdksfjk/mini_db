@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from collections import OrderedDict, deque
 from typing import Optional, Dict, Deque, Literal
 
-from pager import Pager  # 引用已有的 Pager
+from .pager import Pager  # 引用已有的 Pager
 """
 定义缓冲池槽位，一个槽位存放一页数据以及管理信息
 """
