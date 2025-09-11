@@ -1,11 +1,5 @@
 SHOW TABLES;
-CREATE TABLE student (id INT, name VARCHAR, age INT, grade VARCHAR);
-DESCRIBE student;
-INSERT INTO student (id,name,age,grade) VALUES (1,'Alice',20,'A');
-INSERT INTO student (id,name,age,grade) VALUES (2,'Bob',17,'B');
-INSERT INTO student (id,name,age,grade) VALUES (3,'Carol',22,'A');
-INSERT INTO student (id,name,age,grade) VALUES (4,'Dave',18,'B');
-INSERT INTO student (id,name,age,grade) VALUES (5,'Eve',18,'A');
+
 SELECT * FROM student;
 SELECT name, age FROM student;
 SELECT name FROM student WHERE age = 18;
