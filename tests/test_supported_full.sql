@@ -1,22 +1,2 @@
 SHOW TABLES;
-
-SELECT * FROM student;
-SELECT name, age FROM student;
-SELECT name FROM student WHERE age = 18;
-SELECT name FROM student WHERE age != 18;
-SELECT name FROM student WHERE age <> 18;
-SELECT name FROM student WHERE age > 18;
-SELECT name FROM student WHERE age >= 18;
-SELECT name FROM student WHERE age < 18;
-SELECT name FROM student WHERE age <= 18;
-SELECT name, age FROM student ORDER BY age DESC;
-SELECT name, age FROM student ORDER BY age DESC, name ASC;
-SELECT name, age FROM student ORDER BY age DESC, name ASC LIMIT 2;
-SELECT name, age FROM student ORDER BY age DESC, name ASC LIMIT 2 OFFSET 1;
-SELECT name FROM student WHERE age >= 18 ORDER BY age DESC, name ASC LIMIT 3;
-UPDATE student SET age=18, grade='A+' WHERE name='Bob';
-SELECT name, age, grade FROM student WHERE name='Bob';
-DELETE FROM student WHERE grade='C';
-SELECT * FROM student ORDER BY id ASC;
-SHOW TABLES;
-DESCRIBE student;
+SELECT SUM(age),COUNT(*) FROM student GROUP BY grade HAVING COUNT(*) > 1;

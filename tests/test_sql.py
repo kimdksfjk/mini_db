@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath(project_root))
 
 # 使用包导入方式导入SQLCompiler
 from sql import SQLCompiler
-
+from engine.cli.poptable import show_table_popup
 
 def compile_sql(sql: str) -> Dict[str, Any]:
     compiler = SQLCompiler()
@@ -24,7 +24,7 @@ def compile_sql(sql: str) -> Dict[str, Any]:
 
 
 def main() -> None:
-    sql = "INSERT INTO student(id,name,age,grade) VALUES (1,'Alice',20,'A'),(2,'Bob',20,'B');"
+    sql = "SELECT SUM(age),COUNT(*) FROM student GROUP BY grade HAVING COUNT(*) > 1;"
     # 也可以尝试语法或语义错误用例：
     # sql = "SELECT * FROM student"
     # sql = "INSERT INTO student(id,name) VALUES (1,'Alice);"
@@ -42,6 +42,19 @@ def main() -> None:
         print(f"执行计划: {json.dumps(result['execution_plan'], indent=2, ensure_ascii=False)}")
         # 示例：传递给其它模块的函数（此处仅打印）
         forward_to_other_module(execution_plan_json)
+        data = {
+            "columns": ["id", "name", "age", "grade", "course"],
+            "rows": [
+                [1, "Alice", 20, "A", "Database"],
+                [2, "Bob", 20, "B", "OS"],
+                {"id": 3, "name": "Carol", "age": 21, "grade": "A", "course": "Networks"},
+                [4, "Dave", 22, "B+", "Algorithms"],
+            ],
+        }
+        # 显示器演示
+        show_table_popup(data, title="SQL编译器演示结果")
+
+
     else:
         if 'error_type' in result:
             if result['error_type'] == 'SYNTAX_ERROR':

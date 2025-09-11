@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Optional
 
 # Engine parts
 try:
-    from .executor import Executor
-    from .storage_iface import JsonlStorage
-    from .catalog import Catalog
+    from engine.executor import Executor
+    from engine.storage_iface import JsonlStorage
+    from engine.catalog import Catalog
 except ImportError:
     from engine.executor import Executor
     from engine.storage_iface import JsonlStorage
