@@ -3,36 +3,38 @@ from __future__ import annotations
 import os, json
 from typing import Any, Dict, Iterable, Optional
 
-# 强制使用 storage/ 下的页式存储；若导入失败，直接报错，绝不回退 JSONL。
+# 只使用项目里的页式存储；缺失即报错
 try:
     from storage.pager import Pager  # type: ignore
     from storage.buffer_pool import BufferPool  # type: ignore
     try:
-        # TableHeap/Meta 的命名在不同作业实现可能略不同，这里尽量兼容
         from storage.table_heap import TableHeap, TableMeta  # type: ignore
         _HAS_TABLE_META = True
     except Exception:
         from storage.table_heap import TableHeap  # type: ignore
         TableMeta = None  # type: ignore
         _HAS_TABLE_META = False
-    # DataPageView 并不直接在这里使用，但确保实现存在
     from storage.data_page import DataPageView  # noqa: F401
 except Exception as e:
-    raise ImportError("无法导入 storage 模块（pager/buffer_pool/table_heap/data_page）。请确认项目结构与模块名无误。") from e
+    raise ImportError(
+        "无法导入 storage 模块（pager/buffer_pool/table_heap/data_page）。请确认项目结构与模块名无误。"
+    ) from e
+
 
 class StorageAdapter:
     """
-    页式存储适配：
+    纯页式存储适配器：
       - 每张表一个目录 <data_dir>/<table>/
       - 主数据文件 <table>.mdb
-      - 元信息文件 meta.json （用于保存 TableMeta 的必要字段，供下次打开时恢复）
-    注意：不提供 JSONL 回退；如果 storage 包缺失会直接抛错。
+      - 不读不写 meta.json（目录信息交由系统表管理）
     """
+
     def __init__(self, data_dir: str) -> None:
         self.data_dir = os.path.abspath(data_dir)
         os.makedirs(self.data_dir, exist_ok=True)
+        self.default_page_size = 4096
 
-    # --- helpers ---
+    # ---------------- helpers ----------------
     def _table_dir(self, table: str) -> str:
         d = os.path.join(self.data_dir, table)
         os.makedirs(d, exist_ok=True)
@@ -40,71 +42,111 @@ class StorageAdapter:
 
     def _table_paths(self, table: str) -> Dict[str, str]:
         d = self._table_dir(table)
-        return {
-            "mdb": os.path.join(d, f"{table}.mdb"),
-            "meta": os.path.join(d, "meta.json"),
-        }
+        return {"mdb": os.path.join(d, f"{table}.mdb")}
+
+    def _resolve_page_size(self, pager) -> int:
+        """兼容 pager.page_size 为属性或方法；都没有则回退默认值。"""
+        try:
+            ps = getattr(pager, "page_size", None)
+            if callable(ps):
+                return int(ps())
+            if isinstance(ps, (int, float)):
+                return int(ps)
+        except Exception:
+            pass
+        return int(self.default_page_size)
+
+    def _resolve_num_pages(self, pager, file_path: Optional[str], page_size: int) -> int:
+        """优先用文件大小推断；不可靠时尝试 pager.num_pages（属性或方法）。"""
+        n_pages = 0
+        if isinstance(file_path, str) and os.path.exists(file_path):
+            try:
+                n_pages = os.path.getsize(file_path) // int(page_size)
+            except Exception:
+                n_pages = 0
+        if n_pages <= 1:
+            try:
+                np = getattr(pager, "num_pages", None)
+                if callable(np):
+                    n_pages = int(np())
+                elif isinstance(np, (int, float)):
+                    n_pages = int(np)
+            except Exception:
+                pass
+        return max(1, int(n_pages))
+
+    def _make_meta(self, table: str, pager: Pager, mdb_path: str):
+        """
+        构造一个最小可用的 TableMeta：
+          - 设置 table_id/name；
+          - 用文件大小推导 data_pids = [1..N-1]（假定 0 页为元页）。
+        若工程里 TableMeta 不需要，可返回 None。
+        """
+        if not _HAS_TABLE_META or TableMeta is None:
+            return None
+        # 实例化
+        meta = None
+        try:
+            meta = TableMeta(table_id=1, name=table)  # type: ignore
+        except Exception:
+            try:
+                meta = TableMeta(1, table)            # type: ignore
+            except Exception:
+                return None
+        # 回填 data_pids
+        try:
+            page_size = self._resolve_page_size(pager)
+            file_size = os.path.getsize(mdb_path)
+            n_pages = max(0, file_size // int(page_size))
+            if hasattr(meta, "data_pids"):
+                setattr(meta, "data_pids", list(range(1, n_pages)))
+        except Exception:
+            pass
+        return meta
 
     def _try_build_heap(self, pager: Pager, bp: BufferPool, table: str, meta: Optional[Any]) -> Any:
-        """兼容不同 TableHeap 构造函数签名。"""
+        """
+        按更安全的顺序尝试不同构造签名，尽量避免把字符串误当 meta：
+          1) (pager, bp, meta)
+          2) (pager, bp)
+          3) (pager,)
+          4) (pager, bp, table)   <-- 放最后
+        """
         errors = []
         if meta is not None:
             try:
                 return TableHeap(pager, bp, meta)  # type: ignore
             except Exception as e:
                 errors.append(("TableHeap(pager,bp,meta)", e))
-        # 尝试 (pager,bp,table_name)
-        try:
-            return TableHeap(pager, bp, table)  # type: ignore
-        except Exception as e:
-            errors.append(("TableHeap(pager,bp,table)", e))
-        # 尝试 (pager,bp)
         try:
             return TableHeap(pager, bp)  # type: ignore
         except Exception as e:
             errors.append(("TableHeap(pager,bp)", e))
-        # 尝试 (pager,)
         try:
             return TableHeap(pager)  # type: ignore
         except Exception as e:
             errors.append(("TableHeap(pager)", e))
-        # 如果都失败，抛出详细错误
+        try:
+            return TableHeap(pager, bp, table)  # type: ignore
+        except Exception as e:
+            errors.append(("TableHeap(pager,bp,table)", e))
         msg = "无法构造 TableHeap，尝试的签名：\n" + "\n".join([f" - {sig}: {err}" for sig, err in errors])
         raise RuntimeError(msg)
 
-    # --- catalog-facing APIs ---
+    # --------------- catalog-facing APIs ---------------
     def create_table(self, table: str, columns: list[dict]) -> Dict[str, Any]:
-        paths = self._table_paths(table)
-        mdb_path, meta_path = paths["mdb"], paths["meta"]
+        """
+        创建页式堆文件并返回存储描述（不写 meta.json）。
+        注意：不要先手动写空文件，直接让 Pager 创建并初始化元页。
+        """
+        mdb_path = self._table_paths(table)["mdb"]
 
-        pager = Pager(mdb_path, page_size=4096)  # type: ignore
-        bp = BufferPool(pager, capacity=64, policy="LRU")  # type: ignore
+        pager = Pager(mdb_path, page_size=self.default_page_size)  # type: ignore
+        bp = BufferPool(pager, capacity=64, policy="LRU")          # type: ignore
 
-        # 构造 Meta（若实现中存在）
-        meta = None
-        if _HAS_TABLE_META and TableMeta is not None:  # type: ignore
-            try:
-                meta = TableMeta(table_id=1, name=table)  # type: ignore
-            except Exception:
-                # 有的实现用不同参数名
-                try:
-                    meta = TableMeta(1, table)  # type: ignore
-                except Exception:
-                    meta = None
+        meta = self._make_meta(table, pager, mdb_path)
+        _ = self._try_build_heap(pager, bp, table, meta)
 
-        # 先构建堆，促使底层初始化必要的结构
-        heap = self._try_build_heap(pager, bp, table, meta)
-
-        # 将列信息与可能的 meta 字段落到 meta.json（便于下次 open）
-        meta_obj: Dict[str, Any] = {"table": table, "columns": columns}
-        if meta is not None:
-            for k in ("table_id", "name", "data_pids", "fsm"):
-                if hasattr(meta, k):
-                    meta_obj[k] = getattr(meta, k)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_obj, f, ensure_ascii=False, indent=2)
-
-        # 尝试刷盘
         try:
             bp.flush_all()
         except Exception:
@@ -114,72 +156,35 @@ class StorageAdapter:
         except Exception:
             pass
 
-        return {"kind": "page", "path": mdb_path, "meta": meta_path}
+        return {"kind": "page", "path": mdb_path}
 
     def open_table(self, table: str, storage_desc: Dict[str, Any]):
+        """
+        打开表并返回一个 6 元组：
+          ("page", heap, bp, pager, meta, meta_path)
+        其中 meta_path 恒为 None（不再使用 meta.json）。
+        """
         if storage_desc.get("kind") != "page":
             raise ValueError("存储描述与页式存储不匹配（kind!=page）。")
 
         mdb_path = storage_desc["path"]
-        meta_path = storage_desc.get("meta")
+        pager = Pager(mdb_path, page_size=self.default_page_size)  # type: ignore
+        bp = BufferPool(pager, capacity=64, policy="LRU")          # type: ignore
 
-        pager = Pager(mdb_path, page_size=4096)  # type: ignore
-        bp = BufferPool(pager, capacity=64, policy="LRU")  # type: ignore
-
-        meta = None
-        if _HAS_TABLE_META and TableMeta is not None:  # type: ignore
-            # 尽力从 meta.json 恢复
-            if isinstance(meta_path, str) and os.path.exists(meta_path):
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        m = json.load(f)
-                    # 最小必要字段
-                    table_id = m.get("table_id", 1)
-                    name = m.get("name", table)
-                    try:
-                        meta = TableMeta(table_id=table_id, name=name)  # type: ignore
-                    except Exception:
-                        meta = TableMeta(table_id, name)  # type: ignore
-                    # 尝试回填扩展字段
-                    if hasattr(meta, "data_pids") and isinstance(m.get("data_pids"), list):
-                        meta.data_pids = list(m["data_pids"])
-                    if hasattr(meta, "fsm") and isinstance(m.get("fsm"), dict):
-                        meta.fsm = dict(m["fsm"])
-                except Exception:
-                    # meta.json损坏也不致命，meta=None 走兼容构造
-                    meta = None
-
+        meta = self._make_meta(table, pager, mdb_path)
         heap = self._try_build_heap(pager, bp, table, meta)
+        meta_path = None
         return ("page", heap, bp, pager, meta, meta_path)
 
-    # --- row ops ---
-    def insert_row(self, open_obj, row: Dict[str, Any]) -> None:
+    # ---------------- row ops ----------------
+    def insert_row(self, open_obj, row: Dict[str, Any]) -> Any:
+        """
+        将行对象编码为 JSON -> bytes，调用底层堆 insert，随后 flush+sync。
+        返回底层提供的 RID（若有）。
+        """
         _, heap, bp, pager, meta, meta_path = open_obj
         payload = json.dumps(row, ensure_ascii=False).encode("utf-8")
-        rid = heap.insert(payload)  # type: ignore  # (page_id, slot_id) 之类，具体实现不依赖这里
-
-        # 持久化 meta（若有）
-        try:
-            if meta_path:
-                meta_obj: Dict[str, Any] = {"table": getattr(meta, "name", None) or "unknown"}
-                # 如果 catalog 那边有列，可以不在这里写；为了稳妥，尽量保留原 meta.json 内容
-                if os.path.exists(meta_path):
-                    try:
-                        with open(meta_path, "r", encoding="utf-8") as f:
-                            old = json.load(f)
-                        if isinstance(old, dict):
-                            meta_obj.update(old)
-                    except Exception:
-                        pass
-                # 回填 meta 的运行时字段
-                if meta is not None:
-                    for k in ("table_id", "name", "data_pids", "fsm"):
-                        if hasattr(meta, k):
-                            meta_obj[k] = getattr(meta, k)
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta_obj, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        rid = heap.insert(payload)  # type: ignore
 
         try:
             bp.flush_all()
@@ -189,27 +194,80 @@ class StorageAdapter:
             pager.sync()
         except Exception:
             pass
+        return rid
 
     def scan_rows(self, open_obj) -> Iterable[Dict[str, Any]]:
+        """
+        优先使用 TableHeap.scan()；若其实现依赖 meta.data_pids 而返回空/报错，
+        自动回退到“原始页扫描”：用 Pager 逐页读取 + DataPageView 逐槽解析。
+        """
         _, heap, bp, pager, meta, meta_path = open_obj
-        for (_rid, data) in heap.scan():  # type: ignore
+
+        # 1) 优先尝试 heap.scan()
+        try:
+            it = heap.scan()  # 预期 yield (rid, bytes)
+            got_any = False
+            for (_rid, data) in it:           # type: ignore
+                got_any = True
+                try:
+                    yield json.loads(data.decode("utf-8"))
+                except Exception:
+                    continue
+            if got_any:
+                return
+        except Exception:
+            pass
+
+        # 2) 兜底：按页扫描（跳过 0 号元页）
+        page_size = self._resolve_page_size(pager)
+        file_path = getattr(pager, "path", None) or getattr(pager, "file_path", None)
+        n_pages = self._resolve_num_pages(pager, file_path, page_size)
+
+        for pid in range(1, n_pages):
+            buf = None
             try:
-                yield json.loads(data.decode("utf-8"))
+                if hasattr(pager, "read_page"):
+                    buf = pager.read_page(pid)                # bytes/bytearray/memoryview
+                elif hasattr(bp, "get_page"):
+                    buf = bp.get_page(pid)                    # 部分实现从缓冲池取页
+            except Exception:
+                continue
+            if buf is None:
+                continue
+            try:
+                mv = memoryview(buf)
+                if mv.readonly:
+                    mv = memoryview(bytearray(mv))            # DataPageView 需要可写 mv
+                page = DataPageView(mv)
+                for sid in page.iter_slots():
+                    try:
+                        payload = page.read_record(sid)
+                        obj = json.loads(payload.decode("utf-8"))
+                        yield obj
+                    except Exception:
+                        continue
             except Exception:
                 continue
 
     def clear_table(self, open_obj) -> None:
-        """简单实现：重建 mdb 文件。更细粒度的删除/回收请在 TableHeap 内实现。"""
+        """
+        清空表：删除 .mdb 文件（不重建空文件）。
+        注意：该操作会使当前 open_obj 失效；调用处应在需要时重新 create/open。
+        """
         _, heap, bp, pager, meta, meta_path = open_obj
+        file_path = getattr(pager, "path", None) or getattr(pager, "file_path", None)
+
+        try:
+            bp.flush_all()
+        except Exception:
+            pass
         try:
             pager.close()
         except Exception:
             pass
-        file_path = getattr(pager, "path", None) or getattr(pager, "file_path", None)  # 兼容不同命名
+
         if isinstance(file_path, str):
             try:
                 os.remove(file_path)
             except Exception:
                 pass
-            # 重新创建空表文件
-            self.create_table(getattr(meta, "name", None) or "unknown", [])

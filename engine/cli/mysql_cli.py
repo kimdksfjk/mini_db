@@ -1,6 +1,7 @@
 # engine/cli/mysql_cli.py
 from __future__ import annotations
 import argparse, os, sys, json, time
+
 # Windows 上没有内置 readline，这里做成可选导入，避免报错
 try:
     import readline  # type: ignore
@@ -9,6 +10,17 @@ except Exception:
 
 from typing import Optional
 from engine.executor import Executor
+
+# 与弹窗/导出桥接（保持 poptable.py 不改）
+try:
+    from engine.cli.poptable_bridge import (
+        set_last_result, show_last_popup, export_last_to_excel
+    )
+except Exception:
+    # 桥接层不存在也不阻塞 CLI 运行，仅在使用相关命令时提示
+    set_last_result = None  # type: ignore
+    show_last_popup = None  # type: ignore
+    export_last_to_excel = None  # type: ignore
 
 # 你的 SQL 编译器（小L 的）应位于 sql/sql_compiler.py
 try:
@@ -20,12 +32,17 @@ except Exception as e:
 BANNER = """mini-db 教学版客户端
 说明：
   - 输入 SQL，以分号 ';' 结尾回车执行
-  - \\dt    显示当前所有表
-  - \\q     退出
+  - \\dt           显示当前所有表
+  - \\create_index 表 列 [索引名]
+  - \\list_indexes [表]
+  - \\drop_index   表 索引名
+  - \\popup        弹窗显示最近一次查询结果
+  - \\export [路径] 导出最近一次查询结果（xlsx/缺库回退csv）
+  - \\q            退出
 """
 
 def read_statement(prompt: str = "mini-db> ") -> Optional[str]:
-    r"""多行输入：以分号结束；以 '\' 开头的元命令（\q, \dt）直接返回。"""
+    r"""多行输入：以分号结束；以 '\' 开头的元命令（\q, \dt 等）直接返回。"""
     buf = []
     while True:
         try:
@@ -44,6 +61,17 @@ def read_statement(prompt: str = "mini-db> ") -> Optional[str]:
         if s.endswith(";"):
             return "\n".join(buf)
 
+def _store_popup_result(rows):
+    """把 rows[list[dict]] 变成 {columns, rows} 结构并缓存到弹窗桥接层。"""
+    if set_last_result is None:
+        return
+    try:
+        cols = list(rows[0].keys()) if rows else []
+        table_for_popup = {"columns": cols, "rows": [[r.get(c) for c in cols] for r in rows]}
+        set_last_result(table_for_popup)  # type: ignore
+    except Exception:
+        pass
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="mini-db 中文命令行")
     ap.add_argument("--data", default="data", help="数据与目录（表文件与目录信息将保存在此处）")
@@ -59,7 +87,71 @@ def main(argv=None):
             break
         sql_stripped = sql.strip()
 
-        # 元命令
+        # ---------- 索引相关元命令 ----------
+        # \create_index 表 列 [索引名]
+        if sql_stripped.startswith("\\create_index"):
+            parts = sql_stripped.split()
+            if len(parts) < 3:
+                print("用法: \\create_index <table> <column> [index_name]")
+            else:
+                _, t, c, *rest = parts
+                iname = rest[0] if rest else f"idx_{c}"
+                plan = {"type": "CreateIndex", "table_name": t, "column": c, "index_name": iname}
+                start = time.perf_counter()
+                out = executor.execute_plan(plan)
+                elapsed = time.perf_counter() - start
+                print(out.get("message") or out)
+                print(f"（耗时 {elapsed:.6f} s）")
+            continue
+
+        # \list_indexes [表]
+        if sql_stripped.startswith("\\list_indexes"):
+            parts = sql_stripped.split()
+            t = parts[1] if len(parts) > 1 else None
+            idxs = executor.indexes.list_indexes(t)
+            if not idxs:
+                print("(无索引)")
+            else:
+                if t:
+                    for name, meta in idxs.items():
+                        print(f"{t}.{name} -> {meta.get('type')} ({meta.get('column')})")
+                else:
+                    for tt, mm in idxs.items():
+                        for name, meta in mm.items():
+                            print(f"{tt}.{name} -> {meta.get('type')} ({meta.get('column')})")
+            continue
+
+        # \drop_index 表 索引名
+        if sql_stripped.startswith("\\drop_index"):
+            parts = sql_stripped.split()
+            if len(parts) != 3:
+                print("用法: \\drop_index <table> <index_name>")
+            else:
+                _, t, iname = parts
+                executor.indexes.drop_index(t, iname)
+                print(f"Index {t}.{iname} dropped from registry.")
+            continue
+
+        # ---------- 弹窗/导出元命令 ----------
+        if sql_stripped == "\\popup":
+            if show_last_popup is None:
+                print("该功能依赖 engine/cli/poptable_bridge.py（以及 poptable.py）。")
+            else:
+                show_last_popup("查询结果")  # type: ignore
+            continue
+
+        if sql_stripped.startswith("\\export"):
+            if export_last_to_excel is None:
+                print("该功能依赖 engine/cli/poptable_bridge.py（以及 poptable.py）。")
+            else:
+                parts = sql_stripped.split(maxsplit=1)
+                path = parts[1] if len(parts) > 1 else None
+                saved = export_last_to_excel(file_path=path)  # type: ignore
+                if saved:
+                    print(f"已导出到: {saved}")
+            continue
+
+        # ---------- 基本元命令 ----------
         if sql_stripped in ("\\q;", "\\q"):
             print("再见！")
             break
@@ -76,7 +168,7 @@ def main(argv=None):
             print(f"（耗时 {elapsed:.6f} s）")
             continue
 
-        # 从编译到执行，统一计时
+        # ---------- 从编译到执行，统一计时 ----------
         start_all = time.perf_counter()
         result = compiler.compile(sql)
 
@@ -102,7 +194,7 @@ def main(argv=None):
             print(f"（耗时 {elapsed:.6f} s）")
             continue
 
-        # 输出结果（行集或消息），并显示耗时
+        # ---------- 输出结果（行集或消息），并显示耗时 ----------
         if out.get("ok") and "rows" in out:
             rows = out["rows"]
             if not rows:
@@ -123,6 +215,8 @@ def main(argv=None):
                 for r in rows:
                     print(" | ".join(str(r.get(c, "")).ljust(w) for c, w in zip(cols, widths)))
                 print(f"(共 {len(rows)} 行)")
+                # 缓存到弹窗桥接层（若可用）
+                _store_popup_result(rows)
         else:
             # 非查询语句，打印返回消息或错误
             print(out.get("message") or out.get("error") or out)

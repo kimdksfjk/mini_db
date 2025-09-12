@@ -1,50 +1,32 @@
-
+# engine/catalog.py
 from __future__ import annotations
-import json, os
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any, List, Optional
+import os
+from .storage_adapter import StorageAdapter
+from .sys_catalog import SysCatalog
 
 class Catalog:
-    """Very simple JSON-backed catalog storing table schemas and storage info."""
-    def __init__(self, data_dir: str) -> None:
+    def __init__(self, data_dir: str):
         self.data_dir = os.path.abspath(data_dir)
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.path = os.path.join(self.data_dir, "catalog.json")
-        self._data = {"tables": {}}  # name -> {columns:[{name,type}], storage:{kind:..., path:...}}
-        if os.path.exists(self.path):
-            try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except Exception:
-                # if corrupted, keep empty new catalog
-                self._data = {"tables": {}}
-
-    def save(self) -> None:
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
-
-    # ---- table APIs ----
-    def has_table(self, name: str) -> bool:
-        return name in self._data["tables"]
-
-    def create_table(self, name: str, columns: List[Dict[str, Any]], storage: Dict[str, Any]) -> None:
-        if self.has_table(name):
-            raise ValueError(f"table '{name}' already exists")
-        self._data["tables"][name] = {"columns": columns, "storage": storage}
-        self.save()
-
-    def drop_table(self, name: str) -> None:
-        if not self.has_table(name):
-            raise ValueError(f"table '{name}' does not exist")
-        self._data["tables"].pop(name)
-        self.save()
+        self._storage = StorageAdapter(self.data_dir)
+        self._sys = SysCatalog(self.data_dir, self._storage)
 
     def get_table(self, name: str) -> Dict[str, Any]:
-        t = self._data["tables"].get(name)
-        if not t:
-            raise KeyError(f"table '{name}' not found")
-        return t
+        return self._sys.get_table(name)
 
-    def list_tables(self) -> Dict[str, Any]:
-        return self._data["tables"]
+    def create_table(self, name: str, columns: List[Dict[str, Any]],
+                     storage_desc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        兼容旧调用：允许传入 storage_desc（若已由外部创建 .mdb）。
+        若未提供，则由系统表逻辑自行创建 .mdb。
+        """
+        return self._sys.create_table_and_register(name, columns, storage_desc)
+
+    def list_tables(self) -> List[str]:
+        return self._sys.list_tables()
+
+    def has_table(self, name: str) -> bool:
+        try:
+            self._sys.get_table(name); return True
+        except KeyError:
+            return False
