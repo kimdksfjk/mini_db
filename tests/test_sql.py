@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-示例：在其他文件中引用 SQLCompiler，编译SQL并输出结果，
-并将执行计划以JSON形式传给另一个模块。
+非阻塞版本2：使用非阻塞弹窗参数
 """
 
 import json
 import os
 import sys
+import time
 from typing import Dict, Any
 
 # 调整路径以导入本地模块
@@ -51,12 +51,15 @@ def main() -> None:
                 [4, "Dave", 22, "B+", "Algorithms"],
             ],
         }
-        # 显示器演示
-        show_table_popup(data, title="SQL编译器演示结果")
+        # 非阻塞显示弹窗
+        print("正在非阻塞显示弹窗...")
+        show_table_popup(data, title="SQL编译器演示结果", blocking=False)
+        # 先导出表格
+        print("正在导出表格...")
+        file_path4 = export_table_to_excel(data, "C:/Users/表格.xlsx")
 
-        # 导出表格,演示和导出不能同时存在
-        file_path4 = export_table_to_excel(data, "C:/Users/runcheng tianxia/Desktop/dlc/表格.xlsx")
-        print(f"✓ 导出成功: {file_path4}")
+
+
 
     else:
         if 'error_type' in result:

@@ -56,7 +56,7 @@ def _export_to_csv(path: str, cols: List[str], rs: List[List[Any]]) -> None:
             writer.writerow(["" if v is None else v for v in r])
 
 
-def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查询结果") -> None:
+def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查询结果", blocking: bool = True) -> None:
     try:
         table = json.loads(table_json) if isinstance(table_json, str) else table_json
         columns, rows = _normalize_table_data(table)
@@ -220,19 +220,52 @@ def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查�
     win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
     # 管理事件循环：
-    if created_root:
-        # 新建的根窗口，启动事件循环
-        try:
-            win.grab_set()
-            root.mainloop()
-        except Exception:
-            pass
+    if blocking:
+        # 阻塞模式：等待窗口关闭
+        if created_root:
+            # 新建的根窗口，启动事件循环
+            try:
+                win.grab_set()
+                root.mainloop()
+            except Exception:
+                pass
+        else:
+            # 已有事件循环环境，等待窗口关闭
+            try:
+                root.wait_window(win)
+            except Exception:
+                pass
     else:
-        # 已有事件循环环境，等待窗口关闭
-        try:
-            root.wait_window(win)
-        except Exception:
-            pass
+        # 非阻塞模式：立即返回，窗口在后台运行
+        if created_root:
+            # 启动事件循环但不阻塞
+            try:
+                win.grab_set()
+
+                # 启动一个定时器来保持事件循环运行
+                def keep_alive():
+                    try:
+                        root.update()
+                        root.after(100, keep_alive)  # 每100ms更新一次
+                    except:
+                        pass
+
+                root.after(100, keep_alive)
+            except Exception:
+                pass
+        else:
+            # 在已有root的情况下，也要保持窗口活跃
+            try:
+                def keep_alive():
+                    try:
+                        root.update()
+                        root.after(100, keep_alive)
+                    except:
+                        pass
+
+                root.after(100, keep_alive)
+            except Exception:
+                pass
 
 
 def export_table_to_excel(data: Dict[str, Any], file_path: str = None, directory: str = None) -> str:
