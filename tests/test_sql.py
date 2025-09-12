@@ -9,14 +9,12 @@ import json
 import os
 import sys
 from typing import Dict, Any
-# 添加项目根目录到Python路径，以便可以导入sql包
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.join(current_dir, '..')
-sys.path.insert(0, os.path.abspath(project_root))
 
-# 使用包导入方式导入SQLCompiler
-from sql import SQLCompiler
-from engine.cli.poptable import show_table_popup
+# 调整路径以导入本地模块
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sql.sql_compiler import SQLCompiler
+from engine.cli.poptable import show_table_popup, export_table_to_excel
+
 
 def compile_sql(sql: str) -> Dict[str, Any]:
     compiler = SQLCompiler()
@@ -42,6 +40,8 @@ def main() -> None:
         print(f"执行计划: {json.dumps(result['execution_plan'], indent=2, ensure_ascii=False)}")
         # 示例：传递给其它模块的函数（此处仅打印）
         forward_to_other_module(execution_plan_json)
+
+        # 表格数据演示
         data = {
             "columns": ["id", "name", "age", "grade", "course"],
             "rows": [
@@ -54,11 +54,15 @@ def main() -> None:
         # 显示器演示
         show_table_popup(data, title="SQL编译器演示结果")
 
+        # 导出表格,演示和导出不能同时存在
+        file_path4 = export_table_to_excel(data, "C:/Users/runcheng tianxia/Desktop/dlc/表格.xlsx")
+        print(f"✓ 导出成功: {file_path4}")
 
     else:
         if 'error_type' in result:
             if result['error_type'] == 'SYNTAX_ERROR':
-                print(f"✗ 语法错误: 行{result.get('line', '?')} 列{result.get('column', '?')} - {result.get('message', '')}")
+                print(
+                    f"✗ 语法错误: 行{result.get('line', '?')} 列{result.get('column', '?')} - {result.get('message', '')}")
                 if 'line_text' in result:
                     print(result['line_text'])
                     print(result.get('pointer', ''))
@@ -77,5 +81,3 @@ def forward_to_other_module(plan_json: str) -> None:
 
 if __name__ == "__main__":
     main()
-
-

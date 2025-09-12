@@ -46,6 +46,16 @@ def _normalize_table_data(table: Dict[str, Any]) -> Tuple[List[str], List[List[A
     return columns, rows
 
 
+def _export_to_csv(path: str, cols: List[str], rs: List[List[Any]]) -> None:
+    """导出数据为CSV文件"""
+    import csv
+    with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(cols)
+        for r in rs:
+            writer.writerow(["" if v is None else v for v in r])
+
+
 def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查询结果") -> None:
     try:
         table = json.loads(table_json) if isinstance(table_json, str) else table_json
@@ -195,14 +205,6 @@ def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查�
             from tkinter import messagebox
             messagebox.showerror("导出失败", f"导出时发生错误：{e}")
 
-    def _export_to_csv(path: str, cols: List[str], rs: List[List[Any]]) -> None:
-        import csv
-        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.writer(f)
-            writer.writerow(cols)
-            for r in rs:
-                writer.writerow(["" if v is None else v for v in r])
-
     export_btn = ttk.Button(btn_frame, text="导出为Excel", command=export_to_excel)
     export_btn.pack(side='right', padx=8, pady=6)
 
@@ -215,25 +217,84 @@ def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查�
     h = win.winfo_height()
     sw = win.winfo_screenwidth()
     sh = win.winfo_screenheight()
-    win.geometry(f"{w}x{h}+{(sw - w)//2}+{(sh - h)//2}")
+    win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
     # 管理事件循环：
     if created_root:
-        # 新建的根窗口保持隐藏，仅显示该Toplevel
+        # 新建的根窗口，启动事件循环
         try:
-            try:
-                win.grab_set()
-            except Exception:
-                pass
+            win.grab_set()
             root.mainloop()
         except Exception:
             pass
     else:
-        # 已有事件循环环境，阻塞直到此窗口关闭，避免瞬间消失
+        # 已有事件循环环境，等待窗口关闭
         try:
             root.wait_window(win)
         except Exception:
             pass
+
+
+def export_table_to_excel(data: Dict[str, Any], file_path: str = None, directory: str = None) -> str:
+    """
+    独立导出表格数据为Excel文件
+
+    Args:
+        data: 表格数据，格式为 {'columns': [...], 'rows': [...]}
+        file_path: 输出文件路径，如果为None则自动生成
+        directory: 输出目录，如果指定则在此目录下生成文件
+
+    Returns:
+        实际保存的文件路径
+    """
+    import os
+    from datetime import datetime
+
+    # 数据标准化
+    columns, rows = _normalize_table_data(data)
+
+    # 处理目录参数
+    if directory is not None:
+        # 确保目录存在
+        os.makedirs(directory, exist_ok=True)
+
+        # 如果指定了目录但没有文件名，生成默认文件名
+        if file_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = f"table_export_{timestamp}.xlsx"
+
+        # 如果file_path只是文件名，则与directory组合
+        if not os.path.dirname(file_path):
+            file_path = os.path.join(directory, file_path)
+    else:
+        # 生成默认文件名（当前目录）
+        if file_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = f"table_export_{timestamp}.xlsx"
+
+    try:
+        # 尝试使用openpyxl导出为xlsx
+        if file_path.lower().endswith('.xlsx'):
+            try:
+                from openpyxl import Workbook
+                wb = Workbook()
+                ws = wb.active
+                ws.append(columns)
+                for r in rows:
+                    ws.append(["" if v is None else v for v in r])
+                wb.save(file_path)
+                return file_path
+            except ImportError:
+                # 回退为CSV
+                csv_path = file_path[:-5] + '.csv'
+                _export_to_csv(csv_path, columns, rows)
+                return csv_path
+        else:
+            # 其他扩展名按CSV导出
+            _export_to_csv(file_path, columns, rows)
+            return file_path
+    except Exception as e:
+        raise Exception(f"导出失败: {e}")
 
 
 if __name__ == "__main__":
