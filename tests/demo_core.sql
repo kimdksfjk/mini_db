@@ -1,15 +1,15 @@
 CREATE TABLE student(id INT, name VARCHAR, age INT, grade VARCHAR);
 INSERT INTO student (id,name,age,grade) VALUES
 (1,'Alice',20,'A'),
-(2,'Bob',19,'B'),
+(3,'Bob',19,'B'),
 (3,'Carol',21,'A'),
-(4,'Dave',22,'B'),
-(5,'Eve',23,'C'),
-(6,'Frank',20,'A'),
-(7,'Grace',21,'B'),
-(8,'Heidi',22,'C'),
-(9,'Ivan',19,'A'),
-(10,'Judy',20,'B');
+(1,'Dave',22,'B'),
+(1,'Eve',23,'C'),
+(3,'Frank',20,'A'),
+(1,'Grace',21,'B'),
+(3,'Heidi',22,'C'),
+(1,'Ivan',19,'A'),
+(3,'Judy',20,'B');
 
 SELECT id,name,age,grade FROM student ORDER BY id ASC;
 
