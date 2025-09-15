@@ -2,25 +2,14 @@
 from __future__ import annotations
 import argparse, os, sys, json, time
 
-# Windows 上没有内置 readline，这里做成可选导入，避免报错
+# Windows 没有内置 readline，可选导入避免报错
 try:
     import readline  # type: ignore
 except Exception:
     readline = None
 
-from typing import Optional
+from typing import Optional, Iterable, Dict, Any, List
 from engine.executor import Executor
-
-# 与弹窗/导出桥接（保持 poptable.py 不改）
-try:
-    from engine.cli.poptable_bridge import (
-        set_last_result, show_last_popup, export_last_to_excel
-    )
-except Exception:
-    # 桥接层不存在也不阻塞 CLI 运行，仅在使用相关命令时提示
-    set_last_result = None  # type: ignore
-    show_last_popup = None  # type: ignore
-    export_last_to_excel = None  # type: ignore
 
 # 你的 SQL 编译器（小L 的）应位于 sql/sql_compiler.py
 try:
@@ -29,21 +18,33 @@ except Exception as e:
     print("[致命错误] 无法导入 sql/sql_compiler.SQLCompiler：", e)
     sys.exit(2)
 
+# 弹窗/导出桥（非阻塞弹窗在子进程中）
+try:
+    from .poptable_bridge import (
+        set_last_result,
+        show_last_popup,
+        export_last_to_excel,
+    )  # type: ignore
+except Exception:
+    set_last_result = None
+    show_last_popup = None
+    export_last_to_excel = None
+
 BANNER = """mini-db 教学版客户端
 说明：
   - 输入 SQL，以分号 ';' 结尾回车执行
-  - \\dt           显示当前所有表
-  - \\create_index 表 列 [索引名]
-  - \\list_indexes [表]
-  - \\drop_index   表 索引名
-  - \\popup        弹窗显示最近一次查询结果
-  - \\export [路径] 导出最近一次查询结果（xlsx/缺库回退csv）
-  - \\q            退出
+  - \\dt                          显示当前所有表
+  - \\create_index 表 列          建立索引
+  - \\list_indexes 表             显示表
+  - \\drop_index 表 索引名        删除索引
+  - \\popup                       弹窗显示最近一次查询结果
+  - \\export 路径                 导出最近一次查询结果（xlsx/缺库回退csv）
+  - \\q                           退出
 """
 
 def read_statement(prompt: str = "mini-db> ") -> Optional[str]:
-    r"""多行输入：以分号结束；以 '\' 开头的元命令（\q, \dt 等）直接返回。"""
-    buf = []
+    r"""多行输入：以分号结束；以 '\' 开头的元命令（\q, \dt, \popup, \export）直接返回。"""
+    buf: List[str] = []
     while True:
         try:
             line = input(prompt if not buf else "......> ")
@@ -53,7 +54,7 @@ def read_statement(prompt: str = "mini-db> ") -> Optional[str]:
         if not line:
             continue
         s = line.strip()
-        # ✅ 元命令：直接返回，不要求以 ';' 结尾
+        # 元命令：直接返回，不要求以 ';' 结尾
         if s.startswith("\\"):
             return s
         buf.append(line)
@@ -61,20 +62,70 @@ def read_statement(prompt: str = "mini-db> ") -> Optional[str]:
         if s.endswith(";"):
             return "\n".join(buf)
 
-def _store_popup_result(rows):
-    """把 rows[list[dict]] 变成 {columns, rows} 结构并缓存到弹窗桥接层。"""
-    if set_last_result is None:
+def _print_rows(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        print("(空集)")
         return
-    try:
-        cols = list(rows[0].keys()) if rows else []
-        table_for_popup = {"columns": cols, "rows": [[r.get(c) for c in cols] for r in rows]}
-        set_last_result(table_for_popup)  # type: ignore
-    except Exception:
-        pass
+    cols = list(rows[0].keys())
+    # 计算每列宽度（包含表头）
+    widths = []
+    header_row = {c: c for c in cols}
+    temp_rows = rows + [header_row]
+    def _fmt(v):
+        return "NULL" if v is None else str(v)
+    for c in cols:
+        widths.append(max(len(_fmt(r.get(c, ""))) for r in temp_rows))
+    # 表头
+    header = " | ".join(c.ljust(w) for c, w in zip(cols, widths))
+    print(header)
+    print("-+-".join("-"*w for w in widths))
+    # 数据
+    for r in rows:
+        print(" | ".join(_fmt(r.get(c, "")).ljust(w) for c, w in zip(cols, widths)))
+    print(f"(共 {len(rows)} 行)")
+
+def _coerce_tables_to_items(exe: Executor, tables_obj: Any) -> List[tuple[str, Dict[str, Any]]]:
+    """
+    兼容三种返回：
+      1) dict: {name -> meta}
+      2) list[str]: ["student", "course"]
+      3) list[dict]: [{"name":..., "columns":[...]}, ...]
+    统一转成 [(name, meta_dict)]
+    """
+    items: List[tuple[str, Dict[str, Any]]] = []
+    if isinstance(tables_obj, dict):
+        items = list(tables_obj.items())
+    elif isinstance(tables_obj, list):
+        if not tables_obj:
+            items = []
+        else:
+            first = tables_obj[0]
+            if isinstance(first, str):
+                # 仅名字列表，逐个取 meta
+                for name in tables_obj:
+                    try:
+                        meta = exe.catalog.get_table(name) or {}
+                    except Exception:
+                        meta = {}
+                    items.append((name, meta))
+            elif isinstance(first, dict) and "name" in first:
+                for t in tables_obj:
+                    name = t.get("name")
+                    if not name:
+                        continue
+                    items.append((name, t))
+            else:
+                # 无法识别，直接字符串化输出
+                for idx, t in enumerate(tables_obj):
+                    items.append((f"table_{idx}", {"raw": t}))
+    else:
+        # 其它类型，直接空
+        items = []
+    return items
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="mini-db 中文命令行")
-    ap.add_argument("--data", default="data", help="数据与目录（表文件与目录信息将保存在此处）")
+    ap.add_argument("--data", default="data", help="数据目录（表文件与目录信息将保存在此处）")
     args = ap.parse_args(argv)
 
     print(BANNER)
@@ -87,8 +138,7 @@ def main(argv=None):
             break
         sql_stripped = sql.strip()
 
-        # ---------- 索引相关元命令 ----------
-        # \create_index 表 列 [索引名]
+        # ---------- 索引元命令 ----------
         if sql_stripped.startswith("\\create_index"):
             parts = sql_stripped.split()
             if len(parts) < 3:
@@ -104,11 +154,10 @@ def main(argv=None):
                 print(f"（耗时 {elapsed:.6f} s）")
             continue
 
-        # \list_indexes [表]
         if sql_stripped.startswith("\\list_indexes"):
             parts = sql_stripped.split()
             t = parts[1] if len(parts) > 1 else None
-            idxs = executor.indexes.list_indexes(t)
+            idxs = executor.indexes.list_indexes(t)  # type: ignore
             if not idxs:
                 print("(无索引)")
             else:
@@ -121,32 +170,56 @@ def main(argv=None):
                             print(f"{tt}.{name} -> {meta.get('type')} ({meta.get('column')})")
             continue
 
-        # \drop_index 表 索引名
         if sql_stripped.startswith("\\drop_index"):
             parts = sql_stripped.split()
             if len(parts) != 3:
                 print("用法: \\drop_index <table> <index_name>")
             else:
                 _, t, iname = parts
-                executor.indexes.drop_index(t, iname)
+                executor.indexes.drop_index(t, iname)  # type: ignore
                 print(f"Index {t}.{iname} dropped from registry.")
             continue
 
-        # ---------- 弹窗/导出元命令 ----------
-        if sql_stripped == "\\popup":
+        # ---------- 弹窗/导出 ----------
+        if sql_stripped in ("\\popup", "\\popup;"):
             if show_last_popup is None:
                 print("该功能依赖 engine/cli/poptable_bridge.py（以及 poptable.py）。")
             else:
-                show_last_popup("查询结果")  # type: ignore
+                show_last_popup("查询结果")  # 非阻塞
             continue
 
         if sql_stripped.startswith("\\export"):
             if export_last_to_excel is None:
                 print("该功能依赖 engine/cli/poptable_bridge.py（以及 poptable.py）。")
             else:
-                parts = sql_stripped.split(maxsplit=1)
-                path = parts[1] if len(parts) > 1 else None
-                saved = export_last_to_excel(file_path=path)  # type: ignore
+                import os, datetime
+                args_str = sql_stripped[len("\\export"):].strip()
+                path = None
+                directory = None
+                if not args_str:
+                    # 无参数：当前目录自动命名
+                    path = None
+                    directory = None
+                else:
+                    s = args_str
+                    # 容错：去掉 ["..."] / '...' / "..."
+                    if (s.startswith("[") and s.endswith("]")) or (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+                        try:
+                            parsed = json.loads(s)
+                            if isinstance(parsed, list) and parsed:
+                                s = str(parsed[0])
+                            elif isinstance(parsed, str):
+                                s = parsed
+                        except Exception:
+                            s = s.strip("[]'\" ")
+                    s = s.strip(" '\"")
+                    if os.path.isdir(s) or s.endswith(os.sep) or s.endswith("/") or s.endswith("\\"):
+                        directory = s
+                        path = None
+                    else:
+                        base, ext = os.path.splitext(s)
+                        path = s if ext else (s + ".xlsx")
+                saved = export_last_to_excel(file_path=path, directory=directory)  # type: ignore
                 if saved:
                     print(f"已导出到: {saved}")
             continue
@@ -155,15 +228,21 @@ def main(argv=None):
         if sql_stripped in ("\\q;", "\\q"):
             print("再见！")
             break
+
         if sql_stripped in ("\\dt;", "\\dt"):
             start = time.perf_counter()
-            tables = executor.catalog.list_tables()
-            if not tables:
+            tables_obj = executor.catalog.list_tables()
+            items = _coerce_tables_to_items(executor, tables_obj)
+            if not items:
                 print("(当前没有表)")
             else:
-                for name, meta in tables.items():
-                    cols = ", ".join([f"{c['name']} {c.get('type','')}" for c in meta.get('columns', [])])
-                    print(f"{name} ({cols})")
+                for name, meta in items:
+                    cols_meta = meta.get('columns', [])
+                    if isinstance(cols_meta, list) and cols_meta and isinstance(cols_meta[0], dict):
+                        cols = ", ".join([f"{c.get('name','?')} {c.get('type','')}" for c in cols_meta])
+                        print(f"{name} ({cols})")
+                    else:
+                        print(name)
             elapsed = time.perf_counter() - start
             print(f"（耗时 {elapsed:.6f} s）")
             continue
@@ -194,31 +273,17 @@ def main(argv=None):
             print(f"（耗时 {elapsed:.6f} s）")
             continue
 
-        # ---------- 输出结果（行集或消息），并显示耗时 ----------
+        # ---------- 打印结果 ----------
         if out.get("ok") and "rows" in out:
             rows = out["rows"]
-            if not rows:
-                print("(空集)")
-            else:
-                cols = list(rows[0].keys())
-                # 计算每列宽度（包含表头）
-                widths = []
-                header_row = {c: c for c in cols}
-                temp_rows = rows + [header_row]
-                for c in cols:
-                    widths.append(max(len(str(r.get(c, ""))) for r in temp_rows))
-                # 表头
-                header = " | ".join(c.ljust(w) for c, w in zip(cols, widths))
-                print(header)
-                print("-+-".join("-"*w for w in widths))
-                # 数据
-                for r in rows:
-                    print(" | ".join(str(r.get(c, "")).ljust(w) for c, w in zip(cols, widths)))
-                print(f"(共 {len(rows)} 行)")
-                # 缓存到弹窗桥接层（若可用）
-                _store_popup_result(rows)
+            if set_last_result is not None:
+                # 记住最近一次查询结果，供 \popup / \export 使用
+                try:
+                    set_last_result(rows)  # type: ignore
+                except Exception:
+                    pass
+            _print_rows(rows)
         else:
-            # 非查询语句，打印返回消息或错误
             print(out.get("message") or out.get("error") or out)
 
         elapsed = time.perf_counter() - start_all

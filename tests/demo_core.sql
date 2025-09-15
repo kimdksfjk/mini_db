@@ -28,8 +28,6 @@ FROM student
 GROUP BY grade
 ORDER BY grade ASC;
 
-
-
 CREATE TABLE student(id INT, name VARCHAR, age INT, grade VARCHAR);
 CREATE TABLE course(course_id INT, course_name VARCHAR, teacher VARCHAR);
 INSERT INTO student (id,name,age,grade) VALUES

@@ -56,7 +56,7 @@ def main() -> None:
         show_table_popup(data, title="SQL编译器演示结果", blocking=False)
         # 先导出表格
         print("正在导出表格...")
-        file_path4 = export_table_to_excel(data, "C:/Users/表格.xlsx")
+        file_path4 = export_table_to_excel(data, "C:/Users/表格.xlsx")''
 
 
 
