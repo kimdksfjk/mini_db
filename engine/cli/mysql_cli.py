@@ -126,7 +126,9 @@ def _coerce_tables_to_items(exe: Executor, tables_obj: Any) -> List[tuple[str, D
 def main(argv=None):
     ap = argparse.ArgumentParser(description="mini-db 中文命令行")
     ap.add_argument("--data", default="data", help="数据目录（表文件与目录信息将保存在此处）")
+    ap.add_argument("--debug", action="store_true", help="显示详细报错堆栈")  # ← 新增
     args = ap.parse_args(argv)
+    DEBUG = args.debug  # ← 新增
 
     print(BANNER)
     executor = Executor(args.data)
@@ -265,10 +267,24 @@ def main(argv=None):
         plan = result.get("execution_plan") or {}
         try:
             out = executor.execute_plan(plan)
+        except KeyError as e:
+            # 典型：table 'xxx' not found
+            msg = str(e)
+            if (msg.startswith('"') and msg.endswith('"')) or (msg.startswith("'") and msg.endswith("'")):
+                msg = msg[1:-1]  # 去掉多余引号
+            print(f"[Runtime error] {msg}")
+            if DEBUG:
+                import traceback;
+                traceback.print_exc()
+            elapsed = time.perf_counter() - start_all
+            print(f"（耗时 {elapsed:.6f} s）")
+            continue
         except Exception as e:
-            import traceback
-            print("运行时错误：", f"{type(e).__name__}: {e!s}")
-            traceback.print_exc()
+            # 其他未知错误也给简洁提示；需要再查看堆栈时加 --debug
+            print(f"[Runtime error] {e}")
+            if DEBUG:
+                import traceback;
+                traceback.print_exc()
             elapsed = time.perf_counter() - start_all
             print(f"（耗时 {elapsed:.6f} s）")
             continue

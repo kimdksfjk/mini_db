@@ -43,3 +43,6 @@ FROM student s
 LEFT JOIN course c ON s.id = c.course_id
 ORDER BY s.name;
 
+
+python -m engine.cli.mysql_cli --data data_heap --debug
+
