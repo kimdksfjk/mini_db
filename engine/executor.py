@@ -14,10 +14,23 @@ from .operators.project import ProjectOperator
 from .operators.aggregate import AggregateOperator
 from .operators.create_index import CreateIndexOperator
 from .operators.index_scan import IndexScanOperator
-from .index_registry import IndexRegistry
 from .operators.update import UpdateOperator
-from .operators.delete import DeleteOperator
 
+# 可选：条件删除（你已实现就会被导入，否则保持 None）
+try:
+    from .operators.delete import DeleteOperator  # type: ignore
+except Exception:
+    DeleteOperator = None  # type: ignore
+
+# ✅ 正确导入索引注册表
+try:
+    from .index_registry import IndexRegistry  # type: ignore
+    _HAS_INDEX = True
+except Exception:
+    IndexRegistry = None  # type: ignore
+    _HAS_INDEX = False
+
+from .operators.join import JoinOperator
 
 _AGG_RE = re.compile(
     r'^(?P<func>COUNT|SUM|AVG|MIN|MAX)\('
@@ -27,7 +40,6 @@ _AGG_RE = re.compile(
 )
 
 def _parse_agg_and_columns(cols: List[str]):
-    """从编译器给的 columns 列表中识别聚合项。返回 (final_columns, aggregates)"""
     final_cols: List[str] = []
     aggs: List[Dict[str, Any]] = []
     for raw in cols or []:
@@ -50,7 +62,6 @@ def _parse_agg_and_columns(cols: List[str]):
     return final_cols, aggs
 
 def _rewrite_having(having, aggs):
-    """把 HAVING 中的 COUNT(*) 等表达式映射成聚合别名，便于 FilterOperator 使用。"""
     if not having: return None
     col = str(having.get("column", "")).strip()
     if not col: return None
@@ -73,9 +84,12 @@ class Executor:
         self.data_dir = data_dir
         self.catalog = Catalog(data_dir)
         self.storage = StorageAdapter(data_dir)
-        self.indexes = IndexRegistry(data_dir)
+        # ✅ 这里一定要实例化 IndexRegistry；若不可用则置 None，但算子需做容错
+        self.indexes = IndexRegistry(data_dir) if _HAS_INDEX else None
         self.op_update = UpdateOperator(self.catalog, self.storage, self.indexes)
-        self.op_delete = DeleteOperator(self.catalog, self.storage, self.indexes)
+        self.op_delete = DeleteOperator(self.catalog, self.storage, self.indexes) if DeleteOperator else None
+        self._seq = SeqScanOperator(self.catalog, self.storage)
+        self._join = JoinOperator(self.catalog, self.storage)
 
     def execute_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         ptype = plan.get("type")
@@ -101,16 +115,25 @@ class Executor:
                 return {"ok": False, "error": "no table specified"}
 
             where = plan.get("where") or plan.get("where_condition")
-            # 0) 索引尝试
-            idx_rows = IndexScanOperator(self.catalog, self.storage, self.indexes).try_scan(table, where)
-            if idx_rows is not None:
-                rows: Iterable[dict] = idx_rows
-            else:
-                seq = SeqScanOperator(self.catalog, self.storage)
-                rows = seq.scan(table)
-                rows = FilterOperator(where).run(rows)
+            joins = plan.get("joins") or []
 
-            # 1) 聚合：从 columns 推导 aggregates；group_by 兼容 dict 或 list
+            # JOIN：先联接，再过滤；无 JOIN：尝试索引扫描→顺扫
+            if joins:
+                rows: Iterable[dict] = self._join.execute(table, joins, self._seq)
+                rows = FilterOperator(where).run(rows)
+            else:
+                idx_rows = None
+                try:
+                    idx_rows = IndexScanOperator(self.catalog, self.storage, self.indexes).try_scan(table, where)
+                except Exception:
+                    idx_rows = None
+                if idx_rows is not None:
+                    rows = idx_rows
+                else:
+                    rows = self._seq.scan(table)
+                    rows = FilterOperator(where).run(rows)
+
+            # 聚合 / GROUP BY / HAVING / 投影
             raw_cols: List[str] = plan.get("columns") or ["*"]
             final_cols, aggregates = _parse_agg_and_columns(raw_cols)
             gb = plan.get("group_by")
@@ -131,7 +154,7 @@ class Executor:
             else:
                 rows = ProjectOperator(raw_cols).run(rows)
 
-            # 2) ORDER BY
+            # ORDER BY
             order_by = plan.get("order_by") or []
             if order_by:
                 tmp = list(rows)
@@ -141,7 +164,7 @@ class Executor:
                     tmp.sort(key=lambda r: r.get(col), reverse=desc)
                 rows = tmp
 
-            # 3) LIMIT/OFFSET
+            # LIMIT/OFFSET
             limit = plan.get("limit")
             offset = plan.get("offset", 0)
             out: List[dict] = []
@@ -158,11 +181,20 @@ class Executor:
 
         # ---------- DELETE ----------
         if ptype == "Delete":
-            return self.op_delete.execute(plan)
+            if self.op_delete is None:
+                table = plan.get("table_name")
+                where = plan.get("where")
+                if where:
+                    return {"ok": False, "error": "DELETE with WHERE is not implemented"}
+                meta = self.catalog.get_table(table)
+                opened = self.storage.open_table(table, meta["storage"])
+                self.storage.clear_table(opened)
+                return {"ok": True, "message": f"Table {table} cleared."}
+            else:
+                return self.op_delete.execute(plan)
 
         # ---------- UPDATE ----------
         if ptype == "Update":
-            # 调用已实现的 UpdateOperator
             return self.op_update.execute(plan)
 
         return {"ok": False, "error": f"Unsupported plan type: {ptype}"}

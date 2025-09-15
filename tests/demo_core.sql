@@ -27,3 +27,21 @@ SELECT grade, COUNT(*) AS cnt, AVG(age) AS avg_age
 FROM student
 GROUP BY grade
 ORDER BY grade ASC;
+
+
+
+CREATE TABLE student(id INT, name VARCHAR, age INT, grade VARCHAR);
+CREATE TABLE course(course_id INT, course_name VARCHAR, teacher VARCHAR);
+INSERT INTO student (id,name,age,grade) VALUES
+(1,'Alice',20,'A'),(2,'Bob',19,'B'),(3,'Carol',21,'A'),(4,'Dave',22,'B');
+INSERT INTO course (course_id,course_name,teacher) VALUES
+(1,'DB','Prof.X'),(3,'OS','Dr.Y');
+SELECT s.name, c.course_name
+FROM student s
+INNER JOIN course c ON s.id = c.course_id
+ORDER BY s.name;
+SELECT s.name, c.course_name
+FROM student s
+LEFT JOIN course c ON s.id = c.course_id
+ORDER BY s.name;
+
