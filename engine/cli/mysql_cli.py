@@ -126,9 +126,9 @@ def _coerce_tables_to_items(exe: Executor, tables_obj: Any) -> List[tuple[str, D
 def main(argv=None):
     ap = argparse.ArgumentParser(description="mini-db 中文命令行")
     ap.add_argument("--data", default="data", help="数据目录（表文件与目录信息将保存在此处）")
-    ap.add_argument("--debug", action="store_true", help="显示详细报错堆栈")  # ← 新增
+    ap.add_argument("--debug", action="store_true", help="显示详细报错堆栈")
     args = ap.parse_args(argv)
-    DEBUG = args.debug  # ← 新增
+    DEBUG = args.debug
 
     print(BANNER)
     executor = Executor(args.data)
