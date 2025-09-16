@@ -1,4 +1,4 @@
-1.启动
+1.启动（根目录下命令行运行）
 
 python -m engine.cli.mysql_cli --data 文件夹名
 
