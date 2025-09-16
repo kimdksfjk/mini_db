@@ -61,6 +61,98 @@ def _export_to_csv(path: str, cols: List[str], rs: List[List[Any]]) -> None:
             writer.writerow(["" if v is None else str(v) for v in r])
 
 
+def _export_to_sql(path: str, cols: List[str], rs: List[List[Any]], table_name: str = "exported_table") -> None:
+    """导出数据为SQL文件
+
+    Args:
+        path: 输出文件路径
+        cols: 列名列表
+        rs: 数据行列表
+        table_name: 生成的表名
+    """
+    with open(path, 'w', encoding='utf-8') as f:
+        # 写入文件头注释
+        f.write("-- 自动生成的SQL文件\n")
+        f.write(f"-- 表名: {table_name}\n")
+        f.write(f"-- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"-- 数据行数: {len(rs)}\n\n")
+
+        # 生成CREATE TABLE语句
+        f.write(f"DROP TABLE IF EXISTS `{table_name}`;\n")
+        f.write(f"CREATE TABLE `{table_name}` (\n")
+
+        # 分析列类型并生成列定义
+        column_definitions = []
+        for col in cols:
+            # 简单类型推断：检查数据内容
+            col_data = [row[i] for i, c in enumerate(cols) if c == col for row in rs if row[i] is not None]
+
+            if not col_data:
+                # 如果没有数据，默认为VARCHAR
+                col_type = "VARCHAR(255)"
+            else:
+                # 类型推断逻辑
+                is_numeric = True
+                is_integer = True
+
+                for val in col_data:
+                    try:
+                        # 尝试转换为数字
+                        float_val = float(str(val))
+                        if not float_val.is_integer():
+                            is_integer = False
+                    except (ValueError, TypeError):
+                        is_numeric = False
+                        break
+
+                if is_numeric:
+                    if is_integer:
+                        col_type = "INT"
+                    else:
+                        col_type = "DECIMAL(10,2)"
+                else:
+                    # 计算最大字符串长度
+                    max_len = max(len(str(val)) for val in col_data)
+                    col_type = f"VARCHAR({max(50, min(max_len * 2, 500))})"
+
+            column_definitions.append(f"  `{col}` {col_type}")
+
+        f.write(",\n".join(column_definitions))
+        f.write("\n);\n\n")
+
+        # 生成INSERT语句
+        if rs:
+            f.write(f"INSERT INTO `{table_name}` (`{'`, `'.join(cols)}`) VALUES\n")
+
+            insert_values = []
+            for row in rs:
+                # 处理每行的值
+                formatted_values = []
+                for val in row:
+                    if val is None:
+                        formatted_values.append("NULL")
+                    elif isinstance(val, (int, float)):
+                        formatted_values.append(str(val))
+                    else:
+                        # 转义单引号并添加引号
+                        escaped_val = str(val).replace("'", "''")
+                        formatted_values.append(f"'{escaped_val}'")
+
+                insert_values.append(f"({', '.join(formatted_values)})")
+
+            # 分批写入INSERT语句（每批1000行）
+            batch_size = 1000
+            for i in range(0, len(insert_values), batch_size):
+                batch = insert_values[i:i + batch_size]
+                f.write(",\n".join(batch))
+                if i + batch_size < len(insert_values):
+                    f.write(";\n\nINSERT INTO `{table_name}` (`{'`, `'.join(cols)}`) VALUES\n")
+                else:
+                    f.write(";\n")
+
+        f.write("\n-- SQL文件生成完成\n")
+
+
 class TableViewer:
     """表格查看器类，封装UI逻辑"""
 
@@ -304,6 +396,7 @@ class TableViewer:
             filetypes=[
                 ("Excel 工作簿", ".xlsx"),
                 ("CSV 文件", ".csv"),
+                ("SQL 文件", ".sql"),
                 ("所有文件", "*.*")
             ]
         )
@@ -350,6 +443,23 @@ class TableViewer:
                     messagebox.showinfo("导出完成",
                                         f"未检测到openpyxl库，已导出为CSV格式:\n{csv_path}\n\n如需导出Excel格式，请安装openpyxl: pip install openpyxl",
                                         parent=self.window)
+            elif file_path.lower().endswith('.sql'):
+                # 导出SQL
+                # 清理表名：移除特殊字符，替换空格为下划线，确保符合SQL标识符规范
+                if self.title and self.title != "查询结果":
+                    # 移除特殊字符，只保留字母、数字、下划线
+                    import re
+                    clean_title = re.sub(r'[^\w\u4e00-\u9fff]', '_', self.title)
+                    # 移除连续的下划线
+                    clean_title = re.sub(r'_+', '_', clean_title)
+                    # 移除开头和结尾的下划线
+                    clean_title = clean_title.strip('_')
+                    table_name = clean_title if clean_title else 'exported_table'
+                else:
+                    table_name = 'exported_table'
+                _export_to_sql(file_path, self.columns, self.rows, table_name)
+                messagebox.showinfo("导出成功", f"SQL文件已成功导出到:\n{file_path}\n\n表名: {table_name}",
+                                    parent=self.window)
             else:
                 # 导出CSV
                 _export_to_csv(file_path, self.columns, self.rows)
@@ -469,6 +579,52 @@ def show_table_popup(table_json: Union[str, Dict[str, Any]], title: str = "查�
         root.withdraw()
         messagebox.showerror("数据错误", f"无法解析或显示表格数据：{e}")
         root.destroy()
+
+
+def export_table_to_sql(data: Dict[str, Any], file_path: str = None, directory: str = None,
+                        table_name: str = "exported_table") -> str:
+    """
+    独立导出表格数据为SQL文件
+
+    Args:
+        data: 表格数据，格式为 {'columns': [...], 'rows': [...]}
+        file_path: 输出文件路径，如果为None则自动生成
+        directory: 输出目录，如果指定则在此目录下生成文件
+        table_name: 生成的表名
+
+    Returns:
+        实际保存的文件路径
+    """
+    import os
+    from datetime import datetime
+
+    # 数据标准化
+    columns, rows = _normalize_table_data(data)
+
+    # 处理目录参数
+    if directory is not None:
+        # 确保目录存在
+        os.makedirs(directory, exist_ok=True)
+
+        # 如果指定了目录但没有文件名，生成默认文件名
+        if file_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = f"table_export_{timestamp}.sql"
+
+        # 如果file_path只是文件名，则与directory组合
+        if not os.path.dirname(file_path):
+            file_path = os.path.join(directory, file_path)
+    else:
+        # 生成默认文件名（当前目录）
+        if file_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = f"table_export_{timestamp}.sql"
+
+    try:
+        _export_to_sql(file_path, columns, rows, table_name)
+        return file_path
+    except Exception as e:
+        raise Exception(f"导出SQL失败: {e}")
 
 
 def export_table_to_excel(data: Dict[str, Any], file_path: str = None, directory: str = None) -> str:

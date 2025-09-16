@@ -12,15 +12,13 @@ INSERT INTO student (id,name,age,grade) VALUES
 (3,'Judy',20,'B');
 
 SELECT id,name,age,grade FROM student ORDER BY id ASC;
-
 SELECT grade, COUNT(*) AS cnt, AVG(age) AS avg_age, MIN(age) AS min_age, MAX(age) AS max_age
 FROM student
 GROUP BY grade
 ORDER BY grade ASC;
 
-UPDATE student SET age=22, grade='A+' WHERE id=3;
+UPDATE student SET age=22, grade='A+' WHERE name = 'Judy';
 SELECT id,name,age,grade FROM student WHERE id=3;
-\create_index student id idx_id
 SELECT id,name FROM student WHERE id = 5;
 DELETE FROM student WHERE grade = 'C';
 SELECT grade, COUNT(*) AS cnt, AVG(age) AS avg_age
@@ -38,11 +36,7 @@ SELECT s.name, c.course_name
 FROM student s
 INNER JOIN course c ON s.id = c.course_id
 ORDER BY s.name;
-SELECT s.name, c.course_name
-FROM student s
-LEFT JOIN course c ON s.id = c.course_id
-ORDER BY s.name;
 
 
-python -m engine.cli.mysql_cli --data data_heap --debug
+
 
