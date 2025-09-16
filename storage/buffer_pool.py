@@ -6,6 +6,7 @@ from collections import OrderedDict, deque
 from typing import Optional, Dict, Deque, Literal
 
 from .pager import Pager  # 引用已有的 Pager
+DEBUG_EVICT = False
 """
 定义缓冲池槽位，一个槽位存放一页数据以及管理信息
 """
@@ -210,7 +211,8 @@ class BufferPool:
                 print(f"[EVICT] pid={victim_pid} dirty=True → writeback;replace with pid={incoming_pid}")
                 self.pager.write_page(victim_pid, bytes(fr.data))
             else:
-                print(f"[EVICT] pid={victim_pid} dirty=False")
+                if DEBUG_EVICT:
+                    print(f"[EVICT] pid={victim_pid} dirty=False")
 
             # 从缓存剔除
             self.frames.pop(victim_pid, None)
