@@ -11,7 +11,7 @@ except Exception:
 from typing import Optional, Iterable, Dict, Any, List
 from engine.executor import Executor
 
-# 你的 SQL 编译器（小L 的）应位于 sql/sql_compiler.py
+# SQL 编译器位于 sql/sql_compiler.py
 try:
     from sql.sql_compiler import SQLCompiler  # type: ignore
 except Exception as e:
@@ -126,9 +126,9 @@ def _coerce_tables_to_items(exe: Executor, tables_obj: Any) -> List[tuple[str, D
 def main(argv=None):
     ap = argparse.ArgumentParser(description="mini-db 中文命令行")
     ap.add_argument("--data", default="data", help="数据目录（表文件与目录信息将保存在此处）")
-    ap.add_argument("--debug", action="store_true", help="显示详细报错堆栈")  # ← 新增
+    ap.add_argument("--debug", action="store_true", help="显示详细报错堆栈")
     args = ap.parse_args(argv)
-    DEBUG = args.debug  # ← 新增
+    DEBUG = args.debug
 
     print(BANNER)
     executor = Executor(args.data)
@@ -224,6 +224,46 @@ def main(argv=None):
                 saved = export_last_to_excel(file_path=path, directory=directory)  # type: ignore
                 if saved:
                     print(f"已导出到: {saved}")
+            continue
+        # \bpstat        —— 显示全局统计
+        if sql_stripped.startswith("\\bpstat"):
+            try:
+                from storage.buffer_pool import BufferPool  # type: ignore
+                s = BufferPool.global_stats()
+                dur = max(1e-9, time.perf_counter() - start_all)  # 当前回合时间，仅供参考
+                print(json.dumps(s, ensure_ascii=False, indent=2))
+                stats = executor.storage.buffer_pool_global_stats()
+                print("命中率为："+stats["hit_rate"])
+            except Exception as e:
+                print("无法读取缓冲池统计：", e)
+            continue
+
+        # \bpreset       —— 重置全局统计
+        if sql_stripped.startswith("\\bpreset"):
+            try:
+                from storage.buffer_pool import BufferPool  # type: ignore
+                BufferPool.reset_global_stats()
+                print("BufferPool 统计已重置。")
+            except Exception as e:
+                print("无法重置缓冲池统计：", e)
+            continue
+
+        # \bplog on [path] / \bplog off —— 开启/关闭替换日志
+        if sql_stripped.startswith("\\bplog"):
+            parts = sql_stripped.split()
+            try:
+                from storage.buffer_pool import BufferPool  # type: ignore
+                if len(parts) >= 2 and parts[1].lower() == "on":
+                    path = parts[2] if len(parts) >= 3 else None
+                    BufferPool.enable_global_log(path)
+                    print("BufferPool 替换日志已开启。")
+                elif len(parts) >= 2 and parts[1].lower() == "off":
+                    BufferPool.disable_global_log()
+                    print("BufferPool 替换日志已关闭。")
+                else:
+                    print("用法: \\bplog on [path] | \\bplog off")
+            except Exception as e:
+                print("无法切换缓冲池日志：", e)
             continue
 
         # ---------- 基本元命令 ----------
