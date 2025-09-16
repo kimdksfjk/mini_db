@@ -1,9 +1,9 @@
 # engine/storage_adapter.py
 from __future__ import annotations
-import os, json
+import os, json, atexit
 from typing import Any, Dict, Iterable, Optional
 
-# 只使用项目里的页式存储；缺失即报错
+# 仅使用项目里的页式存储；缺失即报错
 try:
     from storage.pager import Pager  # type: ignore
     from storage.buffer_pool import BufferPool  # type: ignore
@@ -21,18 +21,76 @@ except Exception as e:
     ) from e
 
 
+# ========= 句柄池（全进程复用） =========
+# key = 绝对路径 .mdb
+# value = {"pager": Pager, "bp": BufferPool, "ref": int}
+_HANDLE_POOL: Dict[str, Dict[str, Any]] = {}
+
+
+def _acquire_handles(mdb_path: str, page_size: int, capacity: int = 256, policy: str = "LRU") -> tuple[Pager, BufferPool]:
+    """获取/复用给定 .mdb 的 Pager/BufferPool，并增加引用计数。"""
+    abspath = os.path.abspath(mdb_path)
+    ent = _HANDLE_POOL.get(abspath)
+    if ent is None:
+        pager = Pager(abspath, page_size=page_size)  # type: ignore
+        bp = BufferPool(pager, capacity=capacity, policy=policy)  # type: ignore
+        _HANDLE_POOL[abspath] = {"pager": pager, "bp": bp, "ref": 1}
+        return pager, bp
+    ent["ref"] += 1
+    return ent["pager"], ent["bp"]
+
+
+def _release_handles(mdb_path: str, force: bool = False) -> None:
+    """
+    释放一次引用；当 ref<=0 或 force=True 时，flush/sync/close 并从池中移除。
+    Windows 删除文件前务必 force=True，避免句柄占用。
+    """
+    abspath = os.path.abspath(mdb_path)
+    ent = _HANDLE_POOL.get(abspath)
+    if ent is None:
+        return
+    if not force:
+        ent["ref"] -= 1
+        if ent["ref"] > 0:
+            return
+    try:
+        try:
+            ent["bp"].flush_all()
+        except Exception:
+            pass
+        try:
+            ent["pager"].sync()
+        except Exception:
+            pass
+        try:
+            ent["pager"].close()
+        except Exception:
+            pass
+    finally:
+        _HANDLE_POOL.pop(abspath, None)
+
+
+def _cleanup_pool() -> None:
+    """进程退出前的兜底清理。"""
+    for path in list(_HANDLE_POOL.keys()):
+        _release_handles(path, force=True)
+
+atexit.register(_cleanup_pool)
+
+
 class StorageAdapter:
     """
-    纯页式存储适配器：
-      - 每张表一个目录 <data_dir>/<table>/
-      - 主数据文件 <table>.mdb
-      - 不读不写 meta.json（目录信息交由系统表管理）
+    纯页式存储适配器（使用句柄池复用）：
+      - 每张表一个目录 <data_dir>/<table>/ ，主文件 <table>.mdb
+      - 不读不写 meta.json（系统表负责表级元信息）
+      - open_table() 返回的是句柄池中的 pager/buffer_pool，跨语句复用缓存
     """
 
     def __init__(self, data_dir: str) -> None:
         self.data_dir = os.path.abspath(data_dir)
         os.makedirs(self.data_dir, exist_ok=True)
         self.default_page_size = 4096
+        self.default_bp_capacity = 256  # 可按需调大以提升命中
 
     # ---------------- helpers ----------------
     def _table_dir(self, table: str) -> str:
@@ -84,7 +142,6 @@ class StorageAdapter:
         """
         if not _HAS_TABLE_META or TableMeta is None:
             return None
-        # 实例化
         meta = None
         try:
             meta = TableMeta(table_id=1, name=table)  # type: ignore
@@ -93,7 +150,6 @@ class StorageAdapter:
                 meta = TableMeta(1, table)            # type: ignore
             except Exception:
                 return None
-        # 回填 data_pids
         try:
             page_size = self._resolve_page_size(pager)
             file_size = os.path.getsize(mdb_path)
@@ -106,11 +162,11 @@ class StorageAdapter:
 
     def _try_build_heap(self, pager: Pager, bp: BufferPool, table: str, meta: Optional[Any]) -> Any:
         """
-        按更安全的顺序尝试不同构造签名，尽量避免把字符串误当 meta：
+        依次尝试不同构造签名，尽量规避把字符串误当 meta：
           1) (pager, bp, meta)
           2) (pager, bp)
           3) (pager,)
-          4) (pager, bp, table)   <-- 放最后
+          4) (pager, bp, table)
         """
         errors = []
         if meta is not None:
@@ -137,25 +193,23 @@ class StorageAdapter:
     def create_table(self, table: str, columns: list[dict]) -> Dict[str, Any]:
         """
         创建页式堆文件并返回存储描述（不写 meta.json）。
-        注意：不要先手动写空文件，直接让 Pager 创建并初始化元页。
+        步骤：通过句柄池创建一次 .mdb（写入元页），随后立即释放引用。
         """
         mdb_path = self._table_paths(table)["mdb"]
-
-        pager = Pager(mdb_path, page_size=self.default_page_size)  # type: ignore
-        bp = BufferPool(pager, capacity=64, policy="LRU")          # type: ignore
-
-        meta = self._make_meta(table, pager, mdb_path)
-        _ = self._try_build_heap(pager, bp, table, meta)
-
+        pager, bp = _acquire_handles(mdb_path, page_size=self.default_page_size, capacity=self.default_bp_capacity)
         try:
-            bp.flush_all()
-        except Exception:
-            pass
-        try:
-            pager.sync()
-        except Exception:
-            pass
-
+            meta = self._make_meta(table, pager, mdb_path)
+            _ = self._try_build_heap(pager, bp, table, meta)
+            try:
+                bp.flush_all()
+            except Exception:
+                pass
+            try:
+                pager.sync()
+            except Exception:
+                pass
+        finally:
+            _release_handles(mdb_path)
         return {"kind": "page", "path": mdb_path}
 
     def open_table(self, table: str, storage_desc: Dict[str, Any]):
@@ -163,14 +217,12 @@ class StorageAdapter:
         打开表并返回一个 6 元组：
           ("page", heap, bp, pager, meta, meta_path)
         其中 meta_path 恒为 None（不再使用 meta.json）。
+        句柄来自句柄池，可跨语句复用缓存。
         """
         if storage_desc.get("kind") != "page":
             raise ValueError("存储描述与页式存储不匹配（kind!=page）。")
-
         mdb_path = storage_desc["path"]
-        pager = Pager(mdb_path, page_size=self.default_page_size)  # type: ignore
-        bp = BufferPool(pager, capacity=64, policy="LRU")          # type: ignore
-
+        pager, bp = _acquire_handles(mdb_path, page_size=self.default_page_size, capacity=self.default_bp_capacity)
         meta = self._make_meta(table, pager, mdb_path)
         heap = self._try_build_heap(pager, bp, table, meta)
         meta_path = None
@@ -179,13 +231,12 @@ class StorageAdapter:
     # ---------------- row ops ----------------
     def insert_row(self, open_obj, row: Dict[str, Any]) -> Any:
         """
-        将行对象编码为 JSON -> bytes，调用底层堆 insert，随后 flush+sync。
-        返回底层提供的 RID（若有）。
+        将行对象编码为 JSON -> bytes，调用底层堆 insert。
+        出于简洁与安全，仍在每次插入后 flush+sync；如需更高吞吐，可在上层批量控制。
         """
         _, heap, bp, pager, meta, meta_path = open_obj
         payload = json.dumps(row, ensure_ascii=False).encode("utf-8")
         rid = heap.insert(payload)  # type: ignore
-
         try:
             bp.flush_all()
         except Exception:
@@ -199,7 +250,7 @@ class StorageAdapter:
     def scan_rows(self, open_obj) -> Iterable[Dict[str, Any]]:
         """
         优先使用 TableHeap.scan()；若其实现依赖 meta.data_pids 而返回空/报错，
-        自动回退到“原始页扫描”：用 Pager 逐页读取 + DataPageView 逐槽解析。
+        自动回退到“原始页扫描”：Pager 逐页 + DataPageView 逐槽解析。
         """
         _, heap, bp, pager, meta, meta_path = open_obj
 
@@ -227,9 +278,9 @@ class StorageAdapter:
             buf = None
             try:
                 if hasattr(pager, "read_page"):
-                    buf = pager.read_page(pid)                # bytes/bytearray/memoryview
+                    buf = pager.read_page(pid)
                 elif hasattr(bp, "get_page"):
-                    buf = bp.get_page(pid)                    # 部分实现从缓冲池取页
+                    buf = bp.get_page(pid)  # 从缓冲池取页
             except Exception:
                 continue
             if buf is None:
@@ -237,7 +288,7 @@ class StorageAdapter:
             try:
                 mv = memoryview(buf)
                 if mv.readonly:
-                    mv = memoryview(bytearray(mv))            # DataPageView 需要可写 mv
+                    mv = memoryview(bytearray(mv))  # DataPageView 需要可写 mv
                 page = DataPageView(mv)
                 for sid in page.iter_slots():
                     try:
@@ -252,22 +303,100 @@ class StorageAdapter:
     def clear_table(self, open_obj) -> None:
         """
         清空表：删除 .mdb 文件（不重建空文件）。
-        注意：该操作会使当前 open_obj 失效；调用处应在需要时重新 create/open。
+        为兼容 Windows，先强制释放句柄池中的资源，再删除文件。
         """
         _, heap, bp, pager, meta, meta_path = open_obj
         file_path = getattr(pager, "path", None) or getattr(pager, "file_path", None)
 
-        try:
-            bp.flush_all()
-        except Exception:
-            pass
-        try:
-            pager.close()
-        except Exception:
-            pass
-
         if isinstance(file_path, str):
+            _release_handles(file_path, force=True)
+
+        if isinstance(file_path, str) and os.path.exists(file_path):
             try:
                 os.remove(file_path)
             except Exception:
                 pass
+
+    # ---------------- 缓冲池统计（含命中率） ----------------
+    def buffer_pool_global_stats(self) -> Dict[str, Any]:
+        """
+        返回全局统计（优先调用 BufferPool.global_stats；若无则聚合实例）。
+        统一计算命中率：hit / (hit + miss)。
+        """
+        # 1) 优先使用新版 BufferPool 的类方法
+        gs = getattr(BufferPool, "global_stats", None)
+        if callable(gs):
+            data = gs()  # type: ignore
+            # 兼容不同键名
+            hits = data.get("hits") or data.get("hit") or 0
+            misses = data.get("misses") or data.get("miss") or 0
+            total = hits + misses
+            data["hit_rate"] = (hits / total) if total else 0.0
+            return data
+
+        # 2) 聚合所有实例
+        agg = {"hit": 0, "miss": 0, "evict": 0}
+        for ent in _HANDLE_POOL.values():
+            bp = ent.get("bp")
+            if bp is None:
+                continue
+            # stats 属性（旧版）
+            st = getattr(bp, "stats", None)
+            if isinstance(st, dict):
+                agg["hit"] += int(st.get("hit", 0))
+                agg["miss"] += int(st.get("miss", 0))
+                agg["evict"] += int(st.get("evict", 0))
+            else:
+                agg["hit"] += int(getattr(bp, "hit", 0))
+                agg["miss"] += int(getattr(bp, "miss", 0))
+                agg["evict"] += int(getattr(bp, "evict", 0))
+        total = agg["hit"] + agg["miss"]
+        return {
+            "hits": agg["hit"],
+            "misses": agg["miss"],
+            "evict": agg["evict"],
+            "hit_rate": (agg["hit"] / total) if total else 0.0,
+        }
+
+    def buffer_pool_instance_stats(self) -> Dict[str, Dict[str, Any]]:
+        """
+        返回每个 .mdb 的实例统计；尽力兼容不同 BufferPool 实现。
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+        for path, ent in _HANDLE_POOL.items():
+            bp = ent.get("bp")
+            if bp is None:
+                continue
+            snap = {}
+            # 新版：stats_snapshot()
+            ss = getattr(bp, "stats_snapshot", None)
+            if callable(ss):
+                try:
+                    snap = ss()
+                except Exception:
+                    snap = {}
+            # 旧版：stats 属性 / 命中计数
+            if not snap:
+                st = getattr(bp, "stats", None)
+                if isinstance(st, dict):
+                    snap = dict(st)
+                else:
+                    snap = {
+                        "hit": int(getattr(bp, "hit", 0)),
+                        "miss": int(getattr(bp, "miss", 0)),
+                        "evict": int(getattr(bp, "evict", 0)),
+                    }
+            # 命中率统一补充
+            h = snap.get("hits") or snap.get("hit") or 0
+            m = snap.get("misses") or snap.get("miss") or 0
+            t = h + m
+            snap["hit_rate"] = (h / t) if t else 0.0
+            out[path] = snap
+        return out
+
+    def buffer_pool_hit_rate(self) -> float:
+        """
+        直接返回全局命中率（方便上层快速展示）。
+        """
+        s = self.buffer_pool_global_stats()
+        return float(s.get("hit_rate", 0.0))
