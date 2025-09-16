@@ -6,7 +6,7 @@
 
 import json
 from typing import List, Dict, Any, Optional
-
+#统一包内导入
 from .complier_lex import LexicalAnalyzer, TokenType
 from .ast_nodes import (
     ASTNode,
@@ -45,6 +45,7 @@ class CatalogManager:
 
 
 class SemanticAnalyzer:
+    """语句检查类"""
     def __init__(self, catalog: CatalogManager):
         self.catalog = catalog
 
@@ -78,6 +79,7 @@ class SemanticAnalyzer:
 
 
 class ExecutionPlanGenerator:
+    """生成执行计划"""
     def generate_plan(self, ast: ASTNode) -> Dict[str, Any]:
         if isinstance(ast, CreateTableNode):
             return {'type': 'CreateTable', 'table_name': ast.table_name, 'columns': ast.columns}
@@ -128,6 +130,7 @@ class SQLCompiler:
         self.plan_generator = ExecutionPlanGenerator()
 
     def compile(self, sql_text: str) -> Dict[str, Any]:
+        #流程总控
         try:
             tokens = self.lexical_analyzer.tokenize(sql_text)
             ast = self.syntax_analyzer.parse(tokens)

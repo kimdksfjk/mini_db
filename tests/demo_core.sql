@@ -11,6 +11,7 @@ INSERT INTO student (id,name,age,grade) VALUES
 (1,'Ivan',19,'A'),
 (3,'Judy',20,'B');
 
+
 SELECT id,name,age,grade FROM student ORDER BY id ASC;
 SELECT grade, COUNT(*) AS cnt, AVG(age) AS avg_age, MIN(age) AS min_age, MAX(age) AS max_age
 FROM student

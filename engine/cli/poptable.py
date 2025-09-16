@@ -711,7 +711,7 @@ def export_table_to_excel(data: Dict[str, Any], file_path: str = None, directory
 if __name__ == "__main__":
     # 示例数据
     demo = {
-        "columns": ["ID", "姓名", "年龄", "成绩", "备注"],
+        "columns": ["D", "C", "B", "A", "E"],
         "rows": [
             [1, "张三", 20, "A", "优秀学生"],
             [2, "李四", 21, "B+", "表现良好"],

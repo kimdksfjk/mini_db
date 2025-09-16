@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 语法分析器
+运用自上而下“递归下降”期待，LL（1）风格
 """
 
 from typing import List, Dict, Any, Optional
@@ -34,17 +35,17 @@ class SyntaxAnalyzer:
         if not tokens:
             raise SyntaxError("空的Token流")
         return self.parse_statement()
-
+    #取当前token，越界处理
     def current_token(self) -> Token:
         if self.current_token_index < len(self.tokens):
             return self.tokens[self.current_token_index]
         return Token(TokenType.EOF, "EOF", 0, 0)
-
+    #前进token
     def next_token(self) -> Token:
         if self.current_token_index < len(self.tokens) - 1:
             self.current_token_index += 1
         return self.current_token()
-
+    #核心工具》》》》断言是否符合期待，成功则进且返回token
     def expect_token(self, expected_type: TokenType, expected_value: str = None) -> Token:
         token = self.current_token()
         if token.type != expected_type:
@@ -53,7 +54,7 @@ class SyntaxAnalyzer:
             raise SyntaxError(f"第{token.line}行第{token.column}列：期望'{expected_value}'，但得到'{token.value}'")
         self.next_token()
         return token
-
+    #根调度
     def parse_statement(self) -> ASTNode:
         token = self.current_token()
         if token.type == TokenType.KEYWORD:
@@ -68,7 +69,7 @@ class SyntaxAnalyzer:
             elif token.value == 'UPDATE':
                 return self.parse_update()
         raise SyntaxError(f"第{token.line}行第{token.column}列：不支持的语句类型")
-
+    #craeatetable ast构建
     def parse_create_table(self) -> CreateTableNode:
         self.expect_token(TokenType.KEYWORD, 'CREATE')
         self.expect_token(TokenType.KEYWORD, 'TABLE')
@@ -76,6 +77,7 @@ class SyntaxAnalyzer:
         table_name = table_name_token.value
         self.expect_token(TokenType.DELIMITER, '(')
         columns: List[Dict[str, Any]] = []
+        #循环读变量
         while True:
             column_name_token = self.expect_token(TokenType.IDENTIFIER)
             column_type_token = self.expect_token(TokenType.KEYWORD)
@@ -90,7 +92,7 @@ class SyntaxAnalyzer:
         self.expect_token(TokenType.DELIMITER, ')')
         self.expect_token(TokenType.DELIMITER, ';')
         return CreateTableNode(table_name, columns)
-
+    #insert AST 构建
     def parse_insert(self) -> InsertNode:
         self.expect_token(TokenType.KEYWORD, 'INSERT')
         self.expect_token(TokenType.KEYWORD, 'INTO')
@@ -146,11 +148,12 @@ class SyntaxAnalyzer:
                 raise SyntaxError(f"第{token.line}行第{token.column}列：期望','或';'")
         self.expect_token(TokenType.DELIMITER, ';')
         return InsertNode(table_name, columns, all_values)
-
+    #基本select ASt 构建
     def parse_select(self) -> SelectNode:
         self.expect_token(TokenType.KEYWORD, 'SELECT')
         columns: List[str] = []
         token = self.current_token()
+        #对*做特别处理
         if token.type == TokenType.OPERATOR and token.value == '*':
             columns = ['*']
             self.next_token()
@@ -170,11 +173,12 @@ class SyntaxAnalyzer:
         table_name = table_name_token.value
         where_condition: Optional[Dict[str, Any]] = None
         token = self.current_token()
+        #where状况统一外包
         if token.type == TokenType.KEYWORD and token.value == 'WHERE':
             where_condition = self.parse_where_condition()
         self.expect_token(TokenType.DELIMITER, ';')
         return SelectNode(columns, table_name, where_condition)
-
+    #delete语句AST构建
     def parse_delete(self) -> DeleteNode:
         self.expect_token(TokenType.KEYWORD, 'DELETE')
         self.expect_token(TokenType.KEYWORD, 'FROM')
@@ -186,7 +190,7 @@ class SyntaxAnalyzer:
             where_condition = self.parse_where_condition()
         self.expect_token(TokenType.DELIMITER, ';')
         return DeleteNode(table_name, where_condition)
-
+    #update语句AST构建
     def parse_update(self) -> UpdateNode:
         self.expect_token(TokenType.KEYWORD, 'UPDATE')
         table_name_token = self.expect_token(TokenType.IDENTIFIER)
@@ -213,7 +217,7 @@ class SyntaxAnalyzer:
             where_condition = self.parse_where_condition()
         self.expect_token(TokenType.DELIMITER, ';')
         return UpdateNode(table_name, set_clauses, where_condition)
-
+    #拓展select AST构建
     def parse_extended_select(self) -> ExtendedSelectNode:
         self.expect_token(TokenType.KEYWORD, 'SELECT')
         columns: List[str] = []
@@ -238,6 +242,7 @@ class SyntaxAnalyzer:
                     self.expect_token(TokenType.DELIMITER, ')')
                     alias = None
                     token = self.current_token()
+                    #AS识别
                     if token.type == TokenType.KEYWORD and token.value == 'AS':
                         self.next_token()
                         alias_token = self.expect_token(TokenType.IDENTIFIER)
@@ -279,6 +284,7 @@ class SyntaxAnalyzer:
             self.next_token()
             alias_token = self.expect_token(TokenType.IDENTIFIER)
             table_name = f"{table_name} AS {alias_token.value}"
+        #支持多种子句
         joins = []
         token = self.current_token()
         while token.type == TokenType.KEYWORD and token.value in ['INNER', 'LEFT', 'RIGHT', 'OUTER']:
@@ -436,9 +442,10 @@ class SyntaxAnalyzer:
     def parse_where_condition(self) -> Dict[str, Any]:
         self.expect_token(TokenType.KEYWORD, 'WHERE')
         return self.parse_condition_core()
-
+    #where子句处理
     def parse_condition_core(self) -> Dict[str, Any]:
         token = self.current_token()
+        #关键字处理
         if token.type == TokenType.KEYWORD and token.value in ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']:
             func_name = token.value
             self.next_token()

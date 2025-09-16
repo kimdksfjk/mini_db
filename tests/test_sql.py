@@ -117,6 +117,51 @@ def test_extended_sql_compiler():
     else:
         print(f"✗ 编译失败: {result14['error']}")
     print()
+    test_cases = [
+        "CREATE TABLE student(id INT, name VARCHAR, age INT, grade VARCHAR);",
+        "CREATE TABLE course(course_id INT, course_name VARCHAR, teacher VARCHAR);",
+        "INSERT INTO student(id,name,age,grade) VALUES (1,'Alice',20,'A');",
+        "INSERT INTO student(id,name,age,grade) VALUES (2,'Bob',20,'B'),(3,'Carol',21,'A');",
+        "INSERT INTO student(id,name,age,grade) VALUES (4,'Dave','A');",
+        "INSERT INTO course(course_id,course_name,teacher) VALUES (101,'Database','Dr.Smith');",
+        "SELECT id,name FROM student WHERE age > 18;",
+        "DELETE FROM student WHERE id = 1;",
+        "UPDATE student SET age=21, grade='A+' WHERE id=1;",
+        "SELECT * FROM student WHERE grade = 'A+';",
+        "SELECT id, name, age FROM student ORDER BY age DESC, name ASC;",
+        "SELECT * FROM student ORDER BY age DESC LIMIT 5 OFFSET 0;",
+        "SELECT s.name, c.course_name FROM student s INNER JOIN course c ON s.id = c.course_id;",
+        "SELECT s.name, c.course_name FROM student s LEFT JOIN course c ON s.id = c.course_id;",
+        "SELECT grade, COUNT(*) FROM student GROUP BY grade HAVING COUNT(*) > 0;",
+        "SELECT s.grade, COUNT(*) AS student_count FROM student s INNER JOIN course c ON s.id = c.course_id WHERE s.age > 18 GROUP BY s.grade HAVING COUNT(*) > 0 ORDER BY student_count DESC LIMIT 10;",
+        "SELECT * FROM student",
+        "INSERT INTO student(id,name) VALUES (1,'Alice);",
+        "SELEC id FROM student;",
+    ]
+    print("=== SQL编译器测试（整合） ===\n")
+    for i, sql in enumerate(test_cases, 1):
+        print(f"测试用例 {i}: {sql}")
+        print("-" * 50)
+        result = compiler.compile(sql)
+        if result['success']:
+            print("✓ 编译成功")
+            print(f"Token流: {json.dumps(result['tokens'], ensure_ascii=False)}")
+            print(f"AST: {json.dumps(result['ast'], indent=2, ensure_ascii=False)}")
+            print(f"语义分析: {result['semantic_result']}")
+            print(f"执行计划: {json.dumps(result['execution_plan'], indent=2, ensure_ascii=False)}")
+        else:
+            if 'error_type' in result:
+                if result['error_type'] == 'SYNTAX_ERROR':
+                    print(f"✗ 语法错误: 行{result.get('line', '?')} 列{result.get('column', '?')} - {result.get('message', '')}")
+                    if 'line_text' in result:
+                        print(result['line_text'])
+                        print(result.get('pointer', ''))
+                else:
+                    print(f"✗ {result['error_type']}: {result.get('message', '')}")
+            else:
+                print(f"✗ 编译失败: {result.get('error', '未知错误')}")
+        print()
+
 
     print("=== 扩展功能测试完成 ===")
 
