@@ -60,7 +60,7 @@ class _Inner:
 
 class BPlusTree:
     """
-    纯内存 B+ 树（教学实现）：
+    纯内存 B+ 树：
       - 阶（order）为 M：每个节点最多持有 M-1 个键、M 个孩子。
       - 所有有效数据存放于叶子节点；叶子间通过 next 串联以支持范围扫描。
     """
@@ -189,6 +189,7 @@ class BPlusTree:
         """
         if len(leaf.keys) <= self.M - 1:
             return
+
 
         mid = len(leaf.keys) // 2
         right = _Leaf()

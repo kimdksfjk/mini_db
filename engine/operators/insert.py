@@ -65,7 +65,7 @@ class InsertOperator:
             self.storage.insert_row(opened, row)
             n += 1
 
-            # 索引同步（可选）
+            # 索引同步
             if self.indexes:
                 try:
                     # 兼容两种 API：list_indexes(table) / list_for_table(table)
