@@ -147,6 +147,13 @@ SELECT id,name,age,grade FROM student WHERE id=3;
 - 重现步骤
 - 错误日志
 
+## 🐛 常见问题
+- Q1：为什么第一次查询很慢，第二次很快？
+- A：第一次需要从磁盘加载数据页与索引页（miss 多），而后命中缓冲池与内存 B+树（hit 多）。
+- Q2：删除索引失败/重建很慢？
+- A：使用 \drop_index 表 索引名 删除会清除系统表登记与内存树；不要手动删索引目录。若确实手动删除，请同时清理系统表条目（__sys_indexes），或直接删除整个 --data 目录后重建。
+- Q3：Windows \export 报路径无效？
+- A：请传入标准路径字符串，不要使用类似 ["C:\path"] 的数组写法。例：\export C:\Users\Me\Desktop\out.xlsx。
 ## 📋 开发计划
 
 - [ ] 支持更多SQL函数
@@ -168,7 +175,7 @@ SELECT id,name,age,grade FROM student WHERE id=3;
 
 ## 📞 联系方式
 
-- 邮箱: 1378264698@qq.com
+- 邮箱: 1379587654@qq.com
 
 ---
 
