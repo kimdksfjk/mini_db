@@ -11,4 +11,8 @@ ORDER BY cnt DESC
 LIMIT 10;
 INSERT INTO student (id,name,age,grade) VALUES
 ('jack','Alice',20,'A');
+INSERT INTO students (id,name,age,grade) VALUES
+(255,'Alice',20,'A');
+INSERT INTO student (id,name,age,grade) VALUES
+(255,'Alice',20);
 CREATE TABLE student(id INT, name VARCHAR, age INT, grade VARCHAR);

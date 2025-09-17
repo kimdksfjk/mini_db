@@ -233,7 +233,7 @@ def main(argv=None):
                 dur = max(1e-9, time.perf_counter() - start_all)  # 当前回合时间，仅供参考
                 print(json.dumps(s, ensure_ascii=False, indent=2))
                 stats = executor.storage.buffer_pool_global_stats()
-                print("命中率为："+stats["hit_rate"])
+                print("命中率为："+str(stats["hit_rate"]))
             except Exception as e:
                 print("无法读取缓冲池统计：", e)
             continue
