@@ -1,16 +1,11 @@
 # engine/index_registry.py
 from __future__ import annotations
 from typing import Dict, Any, Optional
-
 from .bptree import BPlusTree
 from .sys_catalog import SysCatalog
 from .storage_adapter import StorageAdapter
 
 class IndexRegistry:
-    """
-    索引注册表：__sys_indexes（.mdb）里持久化索引元数据，
-    运行态缓存内存 B+ 树以支持 O(logN) 的查找与范围扫描。
-    """
     def __init__(self, data_dir: str):
         self.data_dir = data_dir
         self._storage = StorageAdapter(data_dir)
@@ -18,47 +13,27 @@ class IndexRegistry:
         self._trees: Dict[tuple, BPlusTree] = {}
         self._loaded: Dict[tuple, bool] = {}
 
-    # -------- 元数据委托到系统表 --------
     def list_indexes(self, table: Optional[str] = None) -> Dict[str, Any]:
         return self._sys.list_indexes(table)
 
-    def add_index(self, table: str, index_name: str, column: str,
-                  path_or_storage: Dict[str, Any], unique: bool = False):
-        """
-        在系统表登记索引。如果 SysCatalog.add_index 的签名不同，依次尝试三种常见形式。
-        """
-        # 形式1：常见的命名关键字（name / storage_desc）
-        try:
-            return self._sys.add_index(
-                table=table,
-                name=index_name,
-                column=column,
-                storage_desc=path_or_storage,
-                itype="BTREE",
-                unique=unique
-            )
-        except TypeError:
-            pass
-
-        # 形式2：纯位置参数（table, name, column, storage_desc, itype, unique）
-        try:
-            return self._sys.add_index(
-                table, index_name, column, path_or_storage, "BTREE", unique
-            )
-        except TypeError:
-            pass
-
-        # 形式3：命名关键字但用 storage（有些实现用这个键名）
-        return self._sys.add_index(
-            table=table,
-            name=index_name,
-            column=column,
-            storage=path_or_storage,
-            itype="BTREE",
-            unique=unique
-        )
+    def add_index(self, table: str, index_name: str, column: str, storage_desc: Dict[str, Any], unique: bool=False):
+        self._sys.add_index(table, index_name, column, storage_desc, itype="BTREE", unique=unique)
 
     def drop_index(self, table: str, index_name: str):
+        # 先拿到存储描述，准备删除物理文件
+        meta_all = self._sys.list_indexes(table) or {}
+        meta = meta_all.get(index_name)
+        if meta and "storage" in meta:
+            try:
+                desc = meta["storage"]
+                # 名称随你建索引时的命名规则，和 ensure_loaded_from_storage 一致
+                idx_table_name = f"__idx__{table}__{index_name}"
+                opened = self._storage.open_table(idx_table_name, desc)
+                self._storage.clear_table(opened)  # 会强制释放句柄并删除 .mdb
+            except Exception:
+                pass  # 删不掉也别阻断流程（例如文件已被手工删除）
+
+        # 再删系统表元信息与内存缓存
         self._sys.drop_index(table, index_name)
         key = (table, index_name)
         self._trees.pop(key, None)
@@ -67,7 +42,6 @@ class IndexRegistry:
     def find_index_by_column(self, table: str, column: str) -> Optional[Dict[str, Any]]:
         return self._sys.find_index_by_column(table, column)
 
-    # -------- 运行态 B+ 树缓存 --------
     def get_tree(self, table: str, index_name: str) -> BPlusTree:
         key = (table, index_name)
         if key not in self._trees:
@@ -86,9 +60,8 @@ class IndexRegistry:
             return
         storage_desc = meta["storage"]
         opened = storage_adapter.open_table(f"__idx__{table}__{index_name}", storage_desc)
-        # 重置并回放
         self._trees[key] = BPlusTree(order=64)
         tree = self._trees[key]
-        for row in storage_adapter.scan_rows(opened):  # 形如 {"k":..., "row": {...}}
+        for row in storage_adapter.scan_rows(opened):  # {"k":..., "row": {...}}
             tree.insert(row.get("k"), row.get("row"))
         self._loaded[key] = True
