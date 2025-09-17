@@ -139,7 +139,7 @@ SELECT id,name,age,grade FROM student WHERE id=3;
 
 ## 🐛 问题报告
 
-如果发现bug或有功能建议，请[提交issue](https://github.com/kimdksfjk/mini_db.git/issues)。
+如果发现bug或有功能建议，请[提交issue](https://github.com/kimdksfjk/mini_db/issues)。
 
 在报告问题时，请提供：
 - 操作系统和版本
